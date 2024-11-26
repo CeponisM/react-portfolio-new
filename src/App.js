@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, Suspense, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense, useMemo, memo } from 'react';
 import { LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import {
   Search,
@@ -14,8 +14,13 @@ import {
   Edit,
   X,
   Star,
-  BarChart2
+  BarChart2,
+  ChevronLeft, 
+  ChevronRight, 
+  ChevronsLeft, 
+  ChevronsRight
 } from 'lucide-react';
+import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 import debounce from 'lodash/debounce';
 
 // Styled Components with dynamic props
@@ -117,13 +122,6 @@ class ErrorBoundary extends React.Component {
 
 // API configuration
 const API_URL = 'https://coingecko.p.rapidapi.com/coins/markets';
-const API_OPTIONS = {
-  method: 'GET',
-  headers: {
-    'X-RapidAPI-Key': '0026bcf8a1mshb924ad6fbaa031fp15ce2cjsn87ce6d3e6066',
-    'X-RapidAPI-Host': 'coingecko.p.rapidapi.com'
-  }
-};
 
 const LoadingCard = () => (
   <Card isLoading className="p-4 h-24" />
@@ -664,38 +662,84 @@ const SearchInput = ({ value, onChange }) => {
   );
 };
 
-// MarketStats with optimized data fetching
-const useMarketData = () => {
-  const [data, setData] = useState(null);
+const MarketCapChart = memo(({ data }) => (
+  <ResponsiveContainer width="100%" height="100%">
+    <AreaChart
+      data={data}
+      margin={{ top: 0, right: 0, left: 0, bottom: 0 }}
+    >
+      <defs>
+        <linearGradient id="totalMarketGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1} />
+          <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+        </linearGradient>
+      </defs>
+      <Area
+        type="monotone"
+        dataKey="value"
+        stroke="#6366f1"
+        fillOpacity={1}
+        fill="url(#totalMarketGradient)"
+        strokeWidth={1.5}
+        dot={false}
+      />
+      <YAxis domain={['dataMin', 'dataMax']} hide />
+    </AreaChart>
+  </ResponsiveContainer>
+));
 
-  const fetchData = useCallback(async () => {
-    try {
-      const response = await fetch(
-        `${API_URL}/global/market_cap_chart?days=30&vs_currency=usd`,
-        API_OPTIONS
-      );
-      if (!response.ok) throw new Error('Failed to fetch market data');
-      const result = await response.json();
-
-      // Store this data permanently as it doesn't need frequent updates
-      setData(result);
-    } catch (error) {
-      console.error('Failed to fetch market data:', error);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!data) {
-      fetchData();
-    }
-  }, [data, fetchData]);
-
-  return data;
-};
-
-const TopSection = ({ cryptos, favorites, onCryptoClick, onRemoveFavorite }) => {
+const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, onReorderFavorites }) => {
   const headerClassName = "px-2 py-1 border-b bg-gray-50 flex justify-between items-center text-xs font-semibold h-7";
   const cardClassName = "h-[140px] overflow-hidden";
+
+  const lastUpdateRef = useRef(Date.now());
+  const dataRef = useRef({
+    marketCap: null,
+    tether: null,
+    topGainers: []
+  });
+
+  // Memoize calculations
+  const calculatedData = useMemo(() => {
+    const now = Date.now();
+    // Only update every 30 seconds
+    if (now - lastUpdateRef.current < 30000 && dataRef.current.marketCap) {
+      return dataRef.current;
+    }
+
+    const marketCap = cryptos.reduce((sum, crypto) => sum + (crypto?.market_cap || 0), 0);
+    const tether = cryptos.find(c => c?.symbol?.toLowerCase() === 'usdt');
+    const topGainers = [...cryptos]
+      .sort((a, b) => (b.price_change_percentage_24h || 0) - (a.price_change_percentage_24h || 0))
+      .slice(0, 8);
+
+    const newData = {
+      marketCap,
+      tether,
+      topGainers,
+      lastUpdate: now
+    };
+
+    dataRef.current = newData;
+    lastUpdateRef.current = now;
+
+    return newData;
+  }, [cryptos]);
+
+  // Memoize favorites list
+  const favoritesList = useMemo(() => {
+    return cryptos.filter(crypto => favorites.includes(crypto.id));
+  }, [cryptos, favorites]);
+
+  const handleDragEnd = useCallback((result) => {
+    if (!result.destination) return;
+
+    const reorderedFavorites = Array.from(favorites);
+    const [movedItem] = reorderedFavorites.splice(result.source.index, 1);
+    reorderedFavorites.splice(result.destination.index, 0, movedItem);
+
+    onReorderFavorites(reorderedFavorites);
+  }, [favorites, onReorderFavorites]);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 mb-4">
@@ -705,31 +749,28 @@ const TopSection = ({ cryptos, favorites, onCryptoClick, onRemoveFavorite }) => 
           <span>Top Gainers (24h)</span>
         </div>
         <div className="grid grid-cols-4 gap-px p-0.5 bg-gray-100 h-[calc(100%-28px)]">
-          {cryptos
-            .sort((a, b) => (b.price_change_percentage_24h || 0) - (a.price_change_percentage_24h || 0))
-            .slice(0, 8)
-            .map(crypto => crypto && (
-              <div
-                key={crypto.id}
-                className="bg-white hover:bg-gray-50 cursor-pointer flex flex-col items-center justify-center p-1"
-                onClick={() => onCryptoClick(crypto)}
-              >
-                <img 
-                  src={crypto.image} 
-                  alt={crypto.name} 
-                  className="w-4 h-4 mb-0.5"
-                  onError={(e) => {
-                    e.target.onerror = null;
-                    e.target.src = '/placeholder-coin.png';
-                  }}
-                />
-                <span className="text-[9px] font-medium truncate w-full text-center">
-                  {crypto.symbol?.toUpperCase()}
-                </span>
-                <span className="text-[9px] text-green-500 font-medium">
-                  +{crypto.price_change_percentage_24h?.toFixed(1)}%
-                </span>
-              </div>
+          {calculatedData.topGainers.map(crypto => (
+            <div
+              key={crypto.id}
+              className="bg-white hover:bg-gray-50 cursor-pointer flex flex-col items-center justify-center p-1"
+              onClick={() => onCryptoClick(crypto)}
+            >
+              <img
+                src={crypto.image}
+                alt={crypto.name}
+                className="w-4 h-4 mb-0.5"
+                onError={(e) => {
+                  e.target.onerror = null;
+                  e.target.src = '/placeholder-coin.png';
+                }}
+              />
+              <span className="text-[9px] font-medium truncate w-full text-center">
+                {crypto.symbol?.toUpperCase()}
+              </span>
+              <span className="text-[9px] text-green-500 font-medium">
+                +{crypto.price_change_percentage_24h?.toFixed(1)}%
+              </span>
+            </div>
           ))}
         </div>
       </Card>
@@ -750,7 +791,7 @@ const TopSection = ({ cryptos, favorites, onCryptoClick, onRemoveFavorite }) => 
         <div className="flex flex-col p-2 h-[calc(100%-28px)]">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-sm font-bold">
-              ${((cryptos || []).reduce((sum, crypto) => sum + (crypto?.market_cap || 0), 0) / 1e9).toFixed(2)}B
+              ${(calculatedData.marketCap / 1e9).toFixed(2)}B
             </span>
             <PriceChange
               value={cryptos[0]?.price_change_percentage_24h}
@@ -759,32 +800,7 @@ const TopSection = ({ cryptos, favorites, onCryptoClick, onRemoveFavorite }) => 
             />
           </div>
           <div className="flex-1 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart
-                data={generateChartData(cryptos, 30)} // Helper function to generate chart data
-                margin={{ top: 0, right: 0, left: 0, bottom: 0 }}
-              >
-                <defs>
-                  <linearGradient id="totalMarketGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1}/>
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <Area
-                  type="monotone"
-                  dataKey="value"
-                  stroke="#6366f1"
-                  fillOpacity={1}
-                  fill="url(#totalMarketGradient)"
-                  strokeWidth={1.5}
-                  dot={false}
-                />
-                <YAxis 
-                  domain={['dataMin', 'dataMax']}
-                  hide
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            <MarketCapChart data={generateChartData(cryptos, 30)} />
           </div>
         </div>
       </Card>
@@ -803,134 +819,135 @@ const TopSection = ({ cryptos, favorites, onCryptoClick, onRemoveFavorite }) => 
           </Button>
         </div>
         <div className="flex flex-col p-2 h-[calc(100%-28px)]">
-          {(() => {
-            const tether = cryptos.find(c => c?.symbol?.toLowerCase() === 'usdt');
-            return (
-              <>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-bold">
-                    ${(tether?.market_cap / 1e9).toFixed(2)}B
-                  </span>
-                  <PriceChange
-                    value={tether?.price_change_percentage_24h}
-                    className="text-xs"
-                    small
-                  />
-                </div>
-                <div className="flex-1 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart
-                      data={generateChartData([tether], 7)}
-                      margin={{ top: 0, right: 0, left: 0, bottom: 0 }}
-                    >
-                      <defs>
-                        <linearGradient id="tetherGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1}/>
-                          <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
-                        </linearGradient>
-                      </defs>
-                      <Area
-                        type="monotone"
-                        dataKey="value"
-                        stroke="#6366f1"
-                        fillOpacity={1}
-                        fill="url(#tetherGradient)"
-                        strokeWidth={1.5}
-                        dot={false}
-                      />
-                      <YAxis 
-                        domain={['dataMin', 'dataMax']}
-                        hide
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </div>
-              </>
-            );
-          })()}
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-sm font-bold">
+              ${(calculatedData.tether?.market_cap / 1e9).toFixed(2)}B
+            </span>
+            <PriceChange
+              value={calculatedData.tether?.price_change_percentage_24h}
+              className="text-xs"
+              small
+            />
+          </div>
+          <div className="flex-1 w-full">
+            <MarketCapChart data={generateChartData([calculatedData.tether], 7)} />
+          </div>
         </div>
       </Card>
 
       {/* Favorites */}
       <Card className={cardClassName}>
         <div className={headerClassName}>
-          <span>Favorites</span>
+          <span>Favorites ({favoritesList.length})</span>
         </div>
         <div className="h-[calc(100%-28px)] overflow-hidden">
-          {!favorites?.length ? (
+          {!favoritesList.length ? (
             <div className="p-2 text-xs text-gray-500 text-center">
               No favorites added
             </div>
           ) : (
-            <div className="overflow-y-auto h-full divide-y divide-gray-100">
-              {cryptos
-                .filter(crypto => favorites.includes(crypto.id))
-                .map(crypto => crypto && (
+            <DragDropContext onDragEnd={handleDragEnd}>
+              <Droppable droppableId="favorites">
+                {(provided) => (
                   <div
-                    key={crypto.id}
-                    className="px-2 py-1 hover:bg-gray-50 flex items-center gap-1.5"
+                    ref={provided.innerRef}
+                    {...provided.droppableProps}
+                    className="overflow-y-auto h-full divide-y divide-gray-100"
                   >
-                    <img 
-                      src={crypto.image} 
-                      alt={crypto.name} 
-                      className="w-4 h-4"
-                      onError={(e) => {
-                        e.target.onerror = null;
-                        e.target.src = '/placeholder-coin.png';
-                      }}
-                    />
-                    <span className="text-xs font-medium">{crypto.symbol?.toUpperCase()}</span>
-                    <div className="ml-auto flex items-center gap-2">
-                      <span className="text-xs text-gray-600">
-                        ${crypto.current_price?.toLocaleString()}
-                      </span>
-                      <PriceChange
-                        value={crypto.price_change_percentage_24h}
-                        className="min-w-[50px] text-right"
-                        small
-                      />
-                      <div className="flex gap-0.5">
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          className="p-0.5 hover:bg-gray-100"
-                          onClick={() => onCryptoClick(crypto)}
-                        >
-                          <Search size={12} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          className="p-0.5 hover:bg-gray-100"
-                          onClick={() => window.open(`https://www.tradingview.com/chart/?symbol=${crypto.symbol?.toUpperCase()}USDT`, '_blank')}
-                        >
-                          <BarChart2 size={12} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="xs"
-                          onClick={() => onRemoveFavorite(crypto.id)}
-                          className="p-0.5 hover:bg-red-50"
-                        >
-                          <X size={12} className="text-red-500" />
-                        </Button>
-                      </div>
-                    </div>
+                    {favoritesList.map((crypto, index) => (
+                      <Draggable
+                        key={crypto.id}
+                        draggableId={crypto.id}
+                        index={index}
+                      >
+                        {(provided, snapshot) => (
+                          <div
+                            ref={provided.innerRef}
+                            {...provided.draggableProps}
+                            {...provided.dragHandleProps}
+                            className={`
+                              px-2 py-1 flex items-center gap-1.5
+                              ${snapshot.isDragging ? 'bg-blue-50' : 'hover:bg-gray-50'}
+                            `}
+                          >
+                            <img
+                              src={crypto.image}
+                              alt={crypto.name}
+                              className="w-4 h-4"
+                              onError={(e) => {
+                                e.target.onerror = null;
+                                e.target.src = '/placeholder-coin.png';
+                              }}
+                            />
+                            <span className="text-xs font-medium">
+                              {crypto.symbol?.toUpperCase()}
+                            </span>
+                            <div className="ml-auto flex items-center gap-2">
+                              <span className="text-xs text-gray-600">
+                                ${crypto.current_price?.toLocaleString()}
+                              </span>
+                              <PriceChange
+                                value={crypto.price_change_percentage_24h}
+                                className="min-w-[50px] text-right"
+                                small
+                              />
+                              <div className="flex gap-0.5">
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  className="p-0.5 hover:bg-gray-100"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onCryptoClick(crypto);
+                                  }}
+                                >
+                                  <Search size={12} />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  className="p-0.5 hover:bg-gray-100"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    window.open(`https://www.tradingview.com/chart/?symbol=${crypto.symbol?.toUpperCase()}USDT`, '_blank');
+                                  }}
+                                >
+                                  <BarChart2 size={12} />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="xs"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onRemoveFavorite(crypto.id);
+                                  }}
+                                  className="p-0.5 hover:bg-red-50"
+                                >
+                                  <X size={12} className="text-red-500" />
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </Draggable>
+                    ))}
+                    {provided.placeholder}
                   </div>
-              ))}
-            </div>
+                )}
+              </Droppable>
+            </DragDropContext>
           )}
         </div>
       </Card>
     </div>
   );
-};
+});
 
 // Helper function to safely generate chart data
 const generateChartData = (cryptos, days) => {
   try {
     if (!Array.isArray(cryptos) || !cryptos.length) return [];
-    
+
     // Use sparkline data if available
     if (cryptos[0]?.sparkline_in_7d?.price) {
       return cryptos[0].sparkline_in_7d.price.map((value, index) => ({
@@ -953,7 +970,6 @@ const generateChartData = (cryptos, days) => {
 
 const REFRESH_INTERVAL = 30000;
 const ITEMS_PER_PAGE = 100;
-const CACHE_DURATION = 60000;
 
 const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   // Core state
@@ -964,8 +980,18 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   });
 
   const BATCH_SIZE = 100; // Reduced batch size
+  const CACHE_DURATION = 30000;
   const MAX_RETRIES = 3;
   const RETRY_DELAY = 2000;
+
+  const API_URL = 'https://coingecko.p.rapidapi.com/coins/markets';
+  const API_OPTIONS = useMemo(() => ({
+    method: 'GET',
+    headers: {
+      'X-RapidAPI-Key': '0026bcf8a1mshb924ad6fbaa031fp15ce2cjsn87ce6d3e6066',
+      'X-RapidAPI-Host': 'coingecko.p.rapidapi.com'
+    }
+  }), []);
 
   // UI state
   const [search, setSearch] = useState('');
@@ -984,25 +1010,14 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const pageOptions = [20, 50, 100];
   const listRef = useRef(null);
+  const refreshTimerRef = useRef(null);
 
-  // Cached data refs
-  const dataCache = useRef({
-    timestamp: 0,
-    data: []
+  // Refs for caching and refresh control
+  const cacheRef = useRef({
+    data: new Map(),
+    lastUpdate: 0,
+    pendingRequests: new Map()
   });
-
-  const handleFetchError = useCallback((error) => {
-    console.error('Fetch error:', error);
-    if (cryptos.length === 0) {
-      setError(error.message);
-    } else {
-      setRefreshError(`Refresh failed: ${error.message}. Using cached data.`);
-      // Schedule retry if using cached data
-      setTimeout(() => {
-        fetchAllCryptos(true).catch(console.error);
-      }, 10000);
-    }
-  }, [cryptos.length]);
 
   // Load favorites from localStorage
   const [favorites, setFavorites] = useState(() => {
@@ -1013,205 +1028,364 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
     }
   });
 
-  const fetchCryptoBatch = async (page, retryCount = 0) => {
-    try {
-      const response = await fetch(
-        `${API_URL}?vs_currency=usd&order=${sortConfig.key}_${sortConfig.direction}&per_page=${BATCH_SIZE}&page=${page}&sparkline=true&price_change_percentage=24h,7d`,
-        API_OPTIONS
-      );
-
-      if (response.status === 429) {
-        if (retryCount < MAX_RETRIES) {
-          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * Math.pow(2, retryCount)));
-          return fetchCryptoBatch(page, retryCount + 1);
-        }
-        throw new Error('Rate limit exceeded');
-      }
-
-      if (!response.ok) throw new Error(`Failed to fetch page ${page}`);
-      return await response.json();
-    } catch (error) {
-      console.error(`Error fetching page ${page}:`, error);
-      throw error;
+  // Error handling
+  const handleFetchError = useCallback((error, context = '') => {
+    console.error(`Fetch error ${context}:`, error);
+    if (cryptos.length === 0) {
+      setError(error.message);
+    } else {
+      setRefreshError(`Refresh failed: ${error.message}. Using cached data.`);
     }
-  };
+  }, [cryptos.length]);
 
-  const fetchAllCryptos = useCallback(async (force = false) => {
+  // Data fetching with caching and rate limiting
+  const fetchCryptoPage = useCallback(async (pageNum, retries = 0) => {
+    const cacheKey = `page_${pageNum}`;
     const now = Date.now();
-    if (!force && now - dataCache.current.timestamp < CACHE_DURATION) {
-      return dataCache.current.data;
+
+    // Return pending request if exists
+    if (cacheRef.current.pendingRequests.has(cacheKey)) {
+      return cacheRef.current.pendingRequests.get(cacheKey);
     }
 
-    setIsLoading(true);
-    let allData = [];
-    const batchPromises = [];
+    // Return cached data if valid
+    if (cacheRef.current.data.has(cacheKey) &&
+      now - cacheRef.current.lastUpdate < REFRESH_INTERVAL) {
+      return cacheRef.current.data.get(cacheKey);
+    }
 
-    try {
-      // First batch to get initial data
-      const firstBatch = await fetchCryptoBatch(1);
-      allData = [...firstBatch];
-      setCryptos(firstBatch); // Update UI immediately with first batch
+    const requestPromise = (async () => {
+      try {
+        const response = await fetch(
+          `${API_URL}?vs_currency=usd&order=${sortConfig.key}_${sortConfig.direction}&per_page=${BATCH_SIZE}&page=${pageNum}&sparkline=true&price_change_percentage=24h,7d`,
+          API_OPTIONS
+        );
 
-      // If we got a full batch, fetch more
-      if (firstBatch.length === BATCH_SIZE) {
-        // Fetch remaining batches sequentially to avoid rate limits
-        for (let page = 2; page <= 5; page++) {
-          await new Promise(resolve => setTimeout(resolve, 1500)); // Delay between requests
-          try {
-            const data = await fetchCryptoBatch(page);
-            allData = [...allData, ...data];
-            setCryptos(prev => {
-              // Filter out duplicates based on id
-              const uniqueData = [...prev, ...data].reduce((acc, current) => {
-                if (!acc.find(item => item.id === current.id)) {
-                  acc.push(current);
-                }
-                return acc;
-              }, []);
-              return uniqueData;
-            });
-          } catch (error) {
-            console.error(`Failed to fetch page ${page}`, error);
-            // Continue with what we have if later pages fail
-            break;
+        if (response.status === 429) {
+          if (retries < MAX_RETRIES) {
+            await new Promise(resolve =>
+              setTimeout(resolve, RETRY_DELAY * Math.pow(2, retries))
+            );
+            return fetchCryptoPage(pageNum, retries + 1);
           }
+          throw new Error('Rate limit exceeded');
         }
+
+        if (!response.ok) throw new Error(`Failed to fetch page ${pageNum}`);
+
+        const data = await response.json();
+        cacheRef.current.data.set(cacheKey, data);
+        cacheRef.current.lastUpdate = now;
+
+        return data;
+      } catch (error) {
+        console.error(`Error fetching page ${pageNum}:`, error);
+        return cacheRef.current.data.get(cacheKey) || [];
+      } finally {
+        cacheRef.current.pendingRequests.delete(cacheKey);
       }
+    })();
 
-      if (allData.length > 0) {
-        // Remove duplicates from final data
-        const uniqueData = Array.from(new Map(allData.map(item => [item.id, item])).values());
-        
-        dataCache.current = {
-          timestamp: now,
-          data: uniqueData
-        };
+    cacheRef.current.pendingRequests.set(cacheKey, requestPromise);
+    return requestPromise;
+  }, [sortConfig.key, sortConfig.direction, API_OPTIONS]);
 
-        // Update price map
-        const pricesMap = uniqueData.reduce((acc, crypto) => {
-          acc[crypto.id] = {
-            current_price: crypto.current_price,
-            price_change_percentage_24h: crypto.price_change_percentage_24h || 0,
-            price_change_percentage_7d: crypto.price_change_percentage_7d || 0
-          };
-          return acc;
-        }, {});
-        onPricesUpdate(pricesMap);
-      }
-
-      return allData;
-    } catch (error) {
-      handleFetchError(error);
-      return dataCache.current.data; // Return cached data on error
-    } finally {
-      setIsLoading(false);
-    }
-  }, [sortConfig, handleFetchError, onPricesUpdate]);
-
-  // Pagination and filtering
-  const paginatedCryptos = useMemo(() => {
-    const filtered = cryptos.filter(crypto =>
-      crypto.name.toLowerCase().includes(search.toLowerCase()) ||
-      crypto.symbol.toLowerCase().includes(search.toLowerCase())
-    );
-
-    setTotalCryptos(filtered.length); // Update total count based on filters
-
-    const start = (page - 1) * itemsPerPage;
-    const end = start + itemsPerPage;
-    return filtered.slice(start, end);
-  }, [cryptos, search, page, itemsPerPage]);
-
-  // Items per page options
-  const itemsPerPageOptions = [20, 50, 100, 200];
-
-  // Calculate market data from crypto list
+  // Market data calculation
   const calculateMarketData = useCallback((data) => {
     if (!data?.length) return null;
 
     const tether = data.find(crypto =>
-      crypto.symbol.toLowerCase() === 'usdt' ||
-      crypto.id === 'tether'
+      crypto.symbol?.toLowerCase() === 'usdt' || crypto.id === 'tether'
     );
 
     const totalMarketCap = data.reduce((sum, crypto) =>
       sum + (crypto.market_cap || 0), 0
     );
 
-    const total24hChange = data.reduce((sum, crypto) => {
+    const total24hChange = totalMarketCap ? data.reduce((sum, crypto) => {
       const marketCapChange = (crypto.price_change_percentage_24h || 0) * (crypto.market_cap || 0) / 100;
       return sum + marketCapChange;
-    }, 0) / totalMarketCap * 100;
-
-    // Extract sparkline data for charts
-    const chartData30d = data[0]?.sparkline_in_7d?.price || [];
-    const tetherChartData = tether?.sparkline_in_7d?.price || [];
+    }, 0) / totalMarketCap * 100 : 0;
 
     return {
       total: {
         marketCap: totalMarketCap,
         change24h: total24hChange,
-        chartData30d
+        chartData30d: data[0]?.sparkline_in_7d?.price || []
       },
       tether: tether ? {
         marketCap: tether.market_cap,
         change24h: tether.price_change_percentage_24h,
-        chartData7d: tetherChartData
+        chartData7d: tether?.sparkline_in_7d?.price || []
       } : null
     };
   }, []);
 
-  // Main data fetching function
-  const fetchData = useCallback(async (force = false) => {
+  // Load and update data
+  const loadData = useCallback(async (force = false) => {
+    if (isLoading) return; // Prevent concurrent loads
+    
+    setIsLoading(true);
+    setRefreshError(null);
+    
     try {
-      setIsLoading(true);
-      const data = await fetchAllCryptos(force);
-
-      // Update market data
-      const marketInfo = calculateMarketData(data);
-      setMarketData(marketInfo);
-
-      // Update last fetch time
+      const pages = [1, 2, 3, 4, 5];
+      let allData = [];
+  
+      // Load first page immediately
+      const firstPage = await fetchCryptoPage(1);
+      if (!firstPage.length) throw new Error('No data available');
+      
+      setCryptos(firstPage);
+      setMarketData(calculateMarketData(firstPage));
+      allData = firstPage;
+  
+      // Load remaining pages with delay
+      for (let i = 1; i < pages.length; i++) {
+        if (!document.visibilityState === 'visible') break; // Stop loading if tab is hidden
+        
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          const data = await fetchCryptoPage(pages[i]);
+          
+          setCryptos(prev => {
+            const existingIds = new Set(prev.map(c => c.id));
+            const newData = data.filter(c => !existingIds.has(c.id));
+            const combined = [...prev, ...newData].sort((a, b) => 
+              (b[sortConfig.key] || 0) - (a[sortConfig.key] || 0)
+            );
+            setMarketData(calculateMarketData(combined));
+            return combined;
+          });
+  
+          allData = [...allData, ...data];
+        } catch (error) {
+          console.error(`Failed to load page ${pages[i]}:`, error);
+          // Continue with next page
+        }
+      }
+  
+      if (allData.length > 0) {
+        const pricesMap = allData.reduce((acc, crypto) => ({
+          ...acc,
+          [crypto.id]: {
+            current_price: crypto.current_price,
+            price_change_percentage_24h: crypto.price_change_percentage_24h || 0,
+            price_change_percentage_7d: crypto.price_change_percentage_7d || 0
+          }
+        }), {});
+        onPricesUpdate(pricesMap);
+      }
+  
       setLastUpdate(new Date());
       setError(null);
-
-      // Update price map for portfolio
-      const pricesMap = data.reduce((acc, crypto) => {
-        acc[crypto.id] = {
-          current_price: crypto.current_price,
-          price_change_percentage_24h: crypto.price_change_percentage_24h || 0,
-          price_change_percentage_7d: crypto.price_change_percentage_7d || 0
-        };
-        return acc;
-      }, {});
-      onPricesUpdate(pricesMap);
-
+      setRefreshError(null);
     } catch (error) {
-      setError(error.message);
+      handleFetchError(error, 'manual refresh');
     } finally {
       setIsLoading(false);
     }
-  }, [fetchAllCryptos, calculateMarketData, onPricesUpdate]);
-
-  // Initialize data and set up refresh interval
-  useEffect(() => {
-    fetchData(true);
-    const interval = setInterval(() => fetchData(), REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchData]);
-
-  // Save favorites to localStorage
-  useEffect(() => {
-    localStorage.setItem('crypto-favorites', JSON.stringify(favorites));
-  }, [favorites]);
+  }, [fetchCryptoPage, calculateMarketData, handleFetchError, onPricesUpdate, sortConfig.key, isLoading]);
 
   // Handlers
+  const handlePageChange = useCallback((newPage) => {
+    setPage(newPage);
+  }, []);
+
+  const handleItemsPerPageChange = useCallback((newSize) => {
+    setItemsPerPage(newSize);
+    setPage(1);
+  }, []);
+
   const handleSort = useCallback((key) => {
     setSortConfig(prev => ({
       key,
       direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc'
     }));
   }, []);
+
+  const handleAddToPortfolio = useCallback((crypto) => {
+    setSelectedCrypto({
+      cryptoId: crypto.id,
+      ...crypto,
+      price: crypto.current_price
+    });
+  }, []);
+
+  // Save favorites to localStorage
+  useEffect(() => {
+    localStorage.setItem('crypto-favorites', JSON.stringify(favorites));
+  }, [favorites]);
+
+  // Initial load and refresh
+  useEffect(() => {
+    loadData(true);
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadData();
+      }
+    }, REFRESH_INTERVAL);
+
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  // Memoized data
+  const displayedCryptos = useMemo(() => {
+    const filtered = cryptos
+      .filter(crypto =>
+        crypto.name?.toLowerCase().includes(search.toLowerCase()) ||
+        crypto.symbol?.toLowerCase().includes(search.toLowerCase())
+      )
+      .sort((a, b) => {
+        const aValue = a[sortConfig.key] || 0;
+        const bValue = b[sortConfig.key] || 0;
+        return sortConfig.direction === 'desc' ? bValue - aValue : aValue - bValue;
+      });
+
+    const start = (page - 1) * itemsPerPage;
+    const end = start + itemsPerPage;
+    return filtered.slice(start, end);
+  }, [cryptos, search, page, itemsPerPage, sortConfig]);
+
+  const Pagination = () => {
+    const filteredCryptos = useMemo(() => 
+      cryptos.filter(crypto =>
+        crypto.name?.toLowerCase().includes(search.toLowerCase()) ||
+        crypto.symbol?.toLowerCase().includes(search.toLowerCase())
+      ),
+      [cryptos, search]
+    );
+  
+    const totalItems = filteredCryptos.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
+    const currentStartIndex = (page - 1) * itemsPerPage + 1;
+    const currentEndIndex = Math.min(page * itemsPerPage, totalItems);
+  
+    // Generate page numbers to show
+    const getPageNumbers = useCallback(() => {
+      const delta = 2; // Number of pages to show on each side of current page
+      const range = [];
+      const rangeWithDots = [];
+      let l;
+  
+      for (let i = 1; i <= totalPages; i++) {
+        if (
+          i === 1 || 
+          i === totalPages || 
+          (i >= page - delta && i <= page + delta)
+        ) {
+          range.push(i);
+        }
+      }
+  
+      range.forEach(i => {
+        if (l) {
+          if (i - l === 2) {
+            rangeWithDots.push(l + 1);
+          } else if (i - l !== 1) {
+            rangeWithDots.push('...');
+          }
+        }
+        rangeWithDots.push(i);
+        l = i;
+      });
+  
+      return rangeWithDots;
+    }, [page, totalPages]);
+  
+    return (
+      <div className="mt-4 flex flex-col sm:flex-row justify-between items-center gap-4">
+        <div className="flex flex-wrap items-center gap-4">
+          <select
+            className="p-2 border rounded"
+            value={itemsPerPage}
+            onChange={(e) => {
+              const newSize = Number(e.target.value);
+              handleItemsPerPageChange(newSize);
+            }}
+          >
+            {[20, 50, 100, 200].map(size => (
+              <option key={size} value={size}>Show {size} per page</option>
+            ))}
+          </select>
+          <span className="text-sm text-gray-500 whitespace-nowrap">
+            {totalItems === 0 ? (
+              'No results'
+            ) : (
+              `Showing ${currentStartIndex} - ${currentEndIndex} of ${totalItems}`
+            )}
+          </span>
+        </div>
+  
+        <div className="flex items-center gap-1">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handlePageChange(1)}
+            disabled={page <= 1}
+            className="px-2"
+          >
+            <ChevronsLeft size={16} />
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handlePageChange(page - 1)}
+            disabled={page <= 1}
+            className="px-2"
+          >
+            <ChevronLeft size={16} />
+          </Button>
+  
+          <div className="flex items-center gap-1 mx-2">
+            {getPageNumbers().map((pageNum, idx) => (
+              pageNum === '...' ? (
+                <span 
+                  key={`ellipsis-${idx}`} 
+                  className="px-2 text-gray-500"
+                >
+                  ...
+                </span>
+              ) : (
+                <Button
+                  key={pageNum}
+                  variant={pageNum === page ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => handlePageChange(pageNum)}
+                  className={`w-8 h-8 p-0 ${
+                    pageNum === page 
+                      ? 'bg-blue-500 text-white hover:bg-blue-600' 
+                      : 'hover:bg-gray-100'
+                  }`}
+                >
+                  {pageNum}
+                </Button>
+              )
+            ))}
+          </div>
+  
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handlePageChange(page + 1)}
+            disabled={page >= totalPages}
+            className="px-2"
+          >
+            <ChevronRight size={16} />
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handlePageChange(totalPages)}
+            disabled={page >= totalPages}
+            className="px-2"
+          >
+            <ChevronsRight size={16} />
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   const toggleFavorite = useCallback((cryptoId) => {
     setFavorites(prev =>
@@ -1230,25 +1404,12 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
     }
   }, []);
 
-  // Render helpers
   const formatNumber = useCallback((num, decimals = 2) => {
     if (!num) return '$0';
     if (num >= 1e9) return `$${(num / 1e9).toFixed(decimals)}B`;
     if (num >= 1e6) return `$${(num / 1e6).toFixed(decimals)}M`;
     if (num >= 1e3) return `$${(num / 1e3).toFixed(decimals)}K`;
     return `$${num.toFixed(decimals)}`;
-  }, []);
-
-  const handleAddToPortfolio = useCallback((crypto) => {
-    setSelectedCrypto({
-      cryptoId: crypto.id,
-      id: crypto.id,
-      name: crypto.name,
-      symbol: crypto.symbol,
-      current_price: crypto.current_price,
-      image: crypto.image,
-      price: crypto.current_price // Added for modal
-    });
   }, []);
 
   return (
@@ -1284,7 +1445,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
 
           <Button
             variant="secondary"
-            onClick={() => fetchData(true)}
+            onClick={() => loadData(true)}
             disabled={isLoading}
             className="whitespace-nowrap"
           >
@@ -1374,8 +1535,8 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
             </tr>
           </thead>
           <tbody>
-            {isLoading && cryptos.length === 0 ? (
-              Array(ITEMS_PER_PAGE).fill(0).map((_, index) => (
+            {isLoading && displayedCryptos.length === 0 ? (
+              Array(itemsPerPage).fill(0).map((_, index) => (
                 <tr key={index} className="animate-pulse">
                   <td colSpan={8} className="py-2">
                     <div className="h-8 bg-gray-200 rounded"></div>
@@ -1383,7 +1544,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
                 </tr>
               ))
             ) : (
-              paginatedCryptos.map((crypto, index) => (
+              displayedCryptos.map((crypto, index) => (
                 <tr
                   id={`crypto-row-${crypto.id}`}
                   key={crypto.id}
@@ -1473,65 +1634,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
       </div>
 
       {/* Pagination Controls */}
-      <div className="mt-4 flex flex-wrap justify-between items-center gap-4">
-        <div className="flex items-center gap-4">
-          <div className="text-sm text-gray-500">
-            Showing {((page - 1) * itemsPerPage) + 1} - {Math.min(page * itemsPerPage, totalCryptos)} of {totalCryptos}
-          </div>
-          <select
-            className="p-2 border rounded"
-            value={itemsPerPage}
-            onChange={(e) => {
-              const newItemsPerPage = Number(e.target.value);
-              setItemsPerPage(newItemsPerPage);
-              // Adjust current page to maintain approximate scroll position
-              setPage(Math.floor(((page - 1) * itemsPerPage) / newItemsPerPage) + 1);
-            }}
-          >
-            {itemsPerPageOptions.map(option => (
-              <option key={option} value={option}>
-                Show {option} per page
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex gap-2 items-center">
-          <Button
-            variant="secondary"
-            onClick={() => setPage(p => Math.max(1, p - 1))}
-            disabled={page <= 1}
-          >
-            Previous
-          </Button>
-
-          {/* Page numbers */}
-          <div className="flex items-center gap-1">
-            {generatePageNumbers(page, Math.ceil(totalCryptos / itemsPerPage)).map((pageNum, idx) => (
-              pageNum === '...' ? (
-                <span key={`ellipsis-${idx}`} className="px-2">...</span>
-              ) : (
-                <Button
-                  key={pageNum}
-                  variant={pageNum === page ? 'default' : 'ghost'}
-                  className={`w-8 h-8 p-0 ${pageNum === page ? 'bg-blue-500 text-white' : ''}`}
-                  onClick={() => setPage(pageNum)}
-                >
-                  {pageNum}
-                </Button>
-              )
-            ))}
-          </div>
-
-          <Button
-            variant="secondary"
-            onClick={() => setPage(p => Math.min(Math.ceil(totalCryptos / itemsPerPage), p + 1))}
-            disabled={page >= Math.ceil(totalCryptos / itemsPerPage)}
-          >
-            Next
-          </Button>
-        </div>
-      </div>
+      <Pagination />
 
       {/* Modals */}
       {selectedCrypto && (
@@ -1554,7 +1657,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
 // Helper function to generate page numbers
 const generatePageNumbers = (currentPage, totalPages) => {
   const pages = [];
-  
+
   if (totalPages <= 7) {
     return Array.from({ length: totalPages }, (_, i) => i + 1);
   }
