@@ -15,9 +15,9 @@ import {
   X,
   Star,
   BarChart2,
-  ChevronLeft, 
-  ChevronRight, 
-  ChevronsLeft, 
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
   ChevronsRight
 } from 'lucide-react';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
@@ -707,6 +707,15 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
       return dataRef.current;
     }
 
+    // Only calculate if we have data
+    if (!cryptos?.length) {
+      return {
+        marketCap: null,  // Changed from 0 to null
+        tether: null,
+        topGainers: []
+      };
+    }
+
     const marketCap = cryptos.reduce((sum, crypto) => sum + (crypto?.market_cap || 0), 0);
     const tether = cryptos.find(c => c?.symbol?.toLowerCase() === 'usdt');
     const topGainers = [...cryptos]
@@ -714,7 +723,7 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
       .slice(0, 8);
 
     const newData = {
-      marketCap,
+      marketCap: marketCap || null,  // Ensure null if zero/invalid
       tether,
       topGainers,
       lastUpdate: now
@@ -748,30 +757,38 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
         <div className={headerClassName}>
           <span>Top Gainers (24h)</span>
         </div>
-        <div className="grid grid-cols-4 gap-px p-0.5 bg-gray-100 h-[calc(100%-28px)]">
-          {calculatedData.topGainers.map(crypto => (
-            <div
-              key={crypto.id}
-              className="bg-white hover:bg-gray-50 cursor-pointer flex flex-col items-center justify-center p-1"
-              onClick={() => onCryptoClick(crypto)}
-            >
-              <img
-                src={crypto.image}
-                alt={crypto.name}
-                className="w-4 h-4 mb-0.5"
-                onError={(e) => {
-                  e.target.onerror = null;
-                  e.target.src = '/placeholder-coin.png';
-                }}
-              />
-              <span className="text-[9px] font-medium truncate w-full text-center">
-                {crypto.symbol?.toUpperCase()}
-              </span>
-              <span className="text-[9px] text-green-500 font-medium">
-                +{crypto.price_change_percentage_24h?.toFixed(1)}%
-              </span>
+        <div className="h-[calc(100%-28px)]">
+          {!calculatedData.topGainers?.length ? (
+            <div className="w-full h-full flex items-center justify-center">
+              <span className="text-xs text-gray-500">Loading top gainers...</span>
             </div>
-          ))}
+          ) : (
+            <div className="grid grid-cols-4 gap-px p-0.5 bg-gray-100 h-full">
+              {calculatedData.topGainers.map(crypto => (
+                <div
+                  key={crypto.id}
+                  className="bg-white hover:bg-gray-50 cursor-pointer flex flex-col items-center justify-center p-1"
+                  onClick={() => onCryptoClick(crypto)}
+                >
+                  <img
+                    src={crypto.image}
+                    alt={crypto.name}
+                    className="w-4 h-4 mb-0.5"
+                    onError={(e) => {
+                      e.target.onerror = null;
+                      e.target.src = '/placeholder-coin.png';
+                    }}
+                  />
+                  <span className="text-[9px] font-medium truncate w-full text-center">
+                    {crypto.symbol?.toUpperCase()}
+                  </span>
+                  <span className="text-[9px] text-green-500 font-medium">
+                    +{crypto.price_change_percentage_24h?.toFixed(1)}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </Card>
 
@@ -791,7 +808,7 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
         <div className="flex flex-col p-2 h-[calc(100%-28px)]">
           <div className="flex items-center gap-2 mb-1">
             <span className="text-sm font-bold">
-              ${(calculatedData.marketCap / 1e9).toFixed(2)}B
+              ${calculatedData.marketCap ? (calculatedData.marketCap / 1e9).toFixed(2) : 'NaN'}B
             </span>
             <PriceChange
               value={cryptos[0]?.price_change_percentage_24h}
@@ -800,7 +817,12 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
             />
           </div>
           <div className="flex-1 w-full">
-            <MarketCapChart data={generateChartData(cryptos, 30)} />
+            <MarketCapChart
+              data={generateChartData(
+                calculatedData.marketCap ? [{ market_cap: calculatedData.marketCap }] : [],
+                30
+              )}
+            />
           </div>
         </div>
       </Card>
@@ -1124,47 +1146,47 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   // Load and update data
   const loadData = useCallback(async (force = false) => {
     if (isLoading) return; // Prevent concurrent loads
-    
+
     setIsLoading(true);
     setRefreshError(null);
-    
+
     try {
       const pages = [1, 2, 3, 4, 5];
       let allData = [];
-  
+
       // Load first page immediately
       const firstPage = await fetchCryptoPage(1);
       if (!firstPage.length) throw new Error('No data available');
-      
+
       setCryptos(firstPage);
       setMarketData(calculateMarketData(firstPage));
       allData = firstPage;
-  
+
       // Load remaining pages with delay
       for (let i = 1; i < pages.length; i++) {
         if (!document.visibilityState === 'visible') break; // Stop loading if tab is hidden
-        
+
         try {
           await new Promise(resolve => setTimeout(resolve, 1500));
           const data = await fetchCryptoPage(pages[i]);
-          
+
           setCryptos(prev => {
             const existingIds = new Set(prev.map(c => c.id));
             const newData = data.filter(c => !existingIds.has(c.id));
-            const combined = [...prev, ...newData].sort((a, b) => 
+            const combined = [...prev, ...newData].sort((a, b) =>
               (b[sortConfig.key] || 0) - (a[sortConfig.key] || 0)
             );
             setMarketData(calculateMarketData(combined));
             return combined;
           });
-  
+
           allData = [...allData, ...data];
         } catch (error) {
           console.error(`Failed to load page ${pages[i]}:`, error);
           // Continue with next page
         }
       }
-  
+
       if (allData.length > 0) {
         const pricesMap = allData.reduce((acc, crypto) => ({
           ...acc,
@@ -1176,7 +1198,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         }), {});
         onPricesUpdate(pricesMap);
       }
-  
+
       setLastUpdate(new Date());
       setError(null);
       setRefreshError(null);
@@ -1248,36 +1270,36 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   }, [cryptos, search, page, itemsPerPage, sortConfig]);
 
   const Pagination = () => {
-    const filteredCryptos = useMemo(() => 
+    const filteredCryptos = useMemo(() =>
       cryptos.filter(crypto =>
         crypto.name?.toLowerCase().includes(search.toLowerCase()) ||
         crypto.symbol?.toLowerCase().includes(search.toLowerCase())
       ),
       [cryptos, search]
     );
-  
+
     const totalItems = filteredCryptos.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
     const currentStartIndex = (page - 1) * itemsPerPage + 1;
     const currentEndIndex = Math.min(page * itemsPerPage, totalItems);
-  
+
     // Generate page numbers to show
     const getPageNumbers = useCallback(() => {
       const delta = 2; // Number of pages to show on each side of current page
       const range = [];
       const rangeWithDots = [];
       let l;
-  
+
       for (let i = 1; i <= totalPages; i++) {
         if (
-          i === 1 || 
-          i === totalPages || 
+          i === 1 ||
+          i === totalPages ||
           (i >= page - delta && i <= page + delta)
         ) {
           range.push(i);
         }
       }
-  
+
       range.forEach(i => {
         if (l) {
           if (i - l === 2) {
@@ -1289,10 +1311,10 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         rangeWithDots.push(i);
         l = i;
       });
-  
+
       return rangeWithDots;
     }, [page, totalPages]);
-  
+
     return (
       <div className="mt-4 flex flex-col sm:flex-row justify-between items-center gap-4">
         <div className="flex flex-wrap items-center gap-4">
@@ -1316,7 +1338,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
             )}
           </span>
         </div>
-  
+
         <div className="flex items-center gap-1">
           <Button
             variant="secondary"
@@ -1336,12 +1358,12 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           >
             <ChevronLeft size={16} />
           </Button>
-  
+
           <div className="flex items-center gap-1 mx-2">
             {getPageNumbers().map((pageNum, idx) => (
               pageNum === '...' ? (
-                <span 
-                  key={`ellipsis-${idx}`} 
+                <span
+                  key={`ellipsis-${idx}`}
                   className="px-2 text-gray-500"
                 >
                   ...
@@ -1352,18 +1374,17 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
                   variant={pageNum === page ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => handlePageChange(pageNum)}
-                  className={`w-8 h-8 p-0 ${
-                    pageNum === page 
-                      ? 'bg-blue-500 text-white hover:bg-blue-600' 
-                      : 'hover:bg-gray-100'
-                  }`}
+                  className={`w-8 h-8 p-0 ${pageNum === page
+                    ? 'bg-blue-500 text-white hover:bg-blue-600'
+                    : 'hover:bg-gray-100'
+                    }`}
                 >
                   {pageNum}
                 </Button>
               )
             ))}
           </div>
-  
+
           <Button
             variant="secondary"
             size="sm"
