@@ -120,9 +120,6 @@ class ErrorBoundary extends React.Component {
   }
 }
 
-// API configuration
-const API_URL = 'https://coingecko.p.rapidapi.com/coins/markets';
-
 const LoadingCard = () => (
   <Card isLoading className="p-4 h-24" />
 );
@@ -710,20 +707,44 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
     // Only calculate if we have data
     if (!cryptos?.length) {
       return {
-        marketCap: null,  // Changed from 0 to null
+        marketCap: null,
+        marketCapExBtc: null,
+        btcDominance: null,
+        marketCapExBtcChange: null,
+        btcDominanceChange: null,
         tether: null,
         topGainers: []
       };
     }
 
     const marketCap = cryptos.reduce((sum, crypto) => sum + (crypto?.market_cap || 0), 0);
+    const bitcoin = cryptos.find(c => c?.symbol?.toLowerCase() === 'btc');
+    const btcMarketCap = bitcoin?.market_cap || 0;
+    const marketCapExBtc = marketCap - btcMarketCap;
+    const btcDominance = (btcMarketCap / marketCap) * 100;
+
+    const prevMarketCapExBtc = dataRef.current?.marketCapExBtc;
+    const prevBtcDominance = dataRef.current?.btcDominance;
+    
+    const marketCapExBtcChange = prevMarketCapExBtc 
+      ? ((marketCapExBtc - prevMarketCapExBtc) / prevMarketCapExBtc) * 100 
+      : null;
+      
+    const btcDominanceChange = prevBtcDominance 
+      ? btcDominance - prevBtcDominance
+      : null;
+  
     const tether = cryptos.find(c => c?.symbol?.toLowerCase() === 'usdt');
     const topGainers = [...cryptos]
       .sort((a, b) => (b.price_change_percentage_24h || 0) - (a.price_change_percentage_24h || 0))
       .slice(0, 8);
-
+  
     const newData = {
-      marketCap: marketCap || null,  // Ensure null if zero/invalid
+      marketCap: marketCap || null,
+      marketCapExBtc: marketCapExBtc || null,
+      btcDominance: btcDominance || null,
+      marketCapExBtcChange,
+      btcDominanceChange,
       tether,
       topGainers,
       lastUpdate: now
@@ -795,7 +816,7 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
       {/* Total Market Cap */}
       <Card className={cardClassName}>
         <div className={headerClassName}>
-          <span>Total Market Cap</span>
+          <span>Market Overview</span>
           <Button
             variant="ghost"
             size="sm"
@@ -805,24 +826,50 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
             <BarChart2 size={12} />
           </Button>
         </div>
-        <div className="flex flex-col p-2 h-[calc(100%-28px)]">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-sm font-bold">
-              ${calculatedData.marketCap ? (calculatedData.marketCap / 1e9).toFixed(2) : 'NaN'}B
-            </span>
-            <PriceChange
-              value={cryptos[0]?.price_change_percentage_24h}
-              className="text-xs"
-              small
-            />
+        <div className="flex flex-col p-3 h-[calc(100%-28px)] space-y-3">
+          {/* Total Market Cap */}
+          <div className="flex flex-col">
+            <span className="text-xs text-gray-500">Total Market Cap</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold">
+                ${calculatedData.marketCap ? (calculatedData.marketCap / 1e9).toFixed(2) : 'NaN'}B
+              </span>
+              <PriceChange
+                value={cryptos[0]?.price_change_percentage_24h}
+                className="text-xs"
+                small
+              />
+            </div>
           </div>
-          <div className="flex-1 w-full">
-            <MarketCapChart
-              data={generateChartData(
-                calculatedData.marketCap ? [{ market_cap: calculatedData.marketCap }] : [],
-                30
-              )}
-            />
+
+          {/* Market Cap without BTC */}
+          <div className="flex flex-col">
+            <span className="text-xs text-gray-500">Market Cap (excl. BTC)</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold">
+                ${calculatedData.marketCapExBtc ? (calculatedData.marketCapExBtc / 1e9).toFixed(2) : 'NaN'}B
+              </span>
+              <PriceChange
+                value={calculatedData.marketCapExBtcChange}
+                className="text-xs"
+                small
+              />
+            </div>
+          </div>
+
+          {/* BTC Dominance */}
+          <div className="flex flex-col">
+            <span className="text-xs text-gray-500">BTC Dominance</span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold">
+                {calculatedData.btcDominance ? calculatedData.btcDominance.toFixed(2) : 'NaN'}%
+              </span>
+              <PriceChange
+                value={calculatedData.btcDominanceChange}
+                className="text-xs"
+                small
+              />
+            </div>
           </div>
         </div>
       </Card>
@@ -991,22 +1038,23 @@ const generateChartData = (cryptos, days) => {
 };
 
 const REFRESH_INTERVAL = 30000;
+const CACHE_DURATION = 30000;
+const BATCH_SIZE = 100;
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000;
+const API_URL = 'https://coingecko.p.rapidapi.com/coins/markets';
 const ITEMS_PER_PAGE = 100;
 
 const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   // Core state
   const [cryptos, setCryptos] = useState([]);
-  const [marketData, setMarketData] = useState({
-    total: { marketCap: 0, change24h: 0, chartData30d: [] },
-    tether: { marketCap: 0, change24h: 0, chartData7d: [] }
-  });
 
   const BATCH_SIZE = 100; // Reduced batch size
   const CACHE_DURATION = 30000;
   const MAX_RETRIES = 3;
   const RETRY_DELAY = 2000;
 
-  const API_URL = 'https://coingecko.p.rapidapi.com/coins/markets';
+  // API options memoization
   const API_OPTIONS = useMemo(() => ({
     method: 'GET',
     headers: {
@@ -1023,25 +1071,10 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   const [error, setError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [selectedCrypto, setSelectedCrypto] = useState(null);
-  const [totalPages, setTotalPages] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(20);
-  const [showError, setShowError] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState(null);
-  const [totalCryptos, setTotalCryptos] = useState(0);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const pageOptions = [20, 50, 100];
   const listRef = useRef(null);
   const refreshTimerRef = useRef(null);
-
-  // Refs for caching and refresh control
-  const cacheRef = useRef({
-    data: new Map(),
-    lastUpdate: 0,
-    pendingRequests: new Map()
-  });
-
-  // Load favorites from localStorage
   const [favorites, setFavorites] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('crypto-favorites')) || [];
@@ -1050,29 +1083,26 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
     }
   });
 
-  // Error handling
-  const handleFetchError = useCallback((error, context = '') => {
-    console.error(`Fetch error ${context}:`, error);
-    if (cryptos.length === 0) {
-      setError(error.message);
-    } else {
-      setRefreshError(`Refresh failed: ${error.message}. Using cached data.`);
-    }
-  }, [cryptos.length]);
+  // Refs for data management
+  const cacheRef = useRef({
+    data: new Map(),
+    lastUpdate: 0,
+    pendingRequests: new Map()
+  });
 
   // Data fetching with caching and rate limiting
   const fetchCryptoPage = useCallback(async (pageNum, retries = 0) => {
     const cacheKey = `page_${pageNum}`;
     const now = Date.now();
 
-    // Return pending request if exists
+    // Check pending requests
     if (cacheRef.current.pendingRequests.has(cacheKey)) {
       return cacheRef.current.pendingRequests.get(cacheKey);
     }
 
-    // Return cached data if valid
-    if (cacheRef.current.data.has(cacheKey) &&
-      now - cacheRef.current.lastUpdate < REFRESH_INTERVAL) {
+    // Check cache validity
+    if (cacheRef.current.data.has(cacheKey) && 
+        now - cacheRef.current.lastUpdate < CACHE_DURATION) {
       return cacheRef.current.data.get(cacheKey);
     }
 
@@ -1083,9 +1113,10 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           API_OPTIONS
         );
 
+        // Handle rate limiting
         if (response.status === 429) {
           if (retries < MAX_RETRIES) {
-            await new Promise(resolve =>
+            await new Promise(resolve => 
               setTimeout(resolve, RETRY_DELAY * Math.pow(2, retries))
             );
             return fetchCryptoPage(pageNum, retries + 1);
@@ -1093,15 +1124,18 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           throw new Error('Rate limit exceeded');
         }
 
-        if (!response.ok) throw new Error(`Failed to fetch page ${pageNum}`);
-
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        
         const data = await response.json();
+        
+        // Update cache
         cacheRef.current.data.set(cacheKey, data);
         cacheRef.current.lastUpdate = now;
-
+        
         return data;
       } catch (error) {
         console.error(`Error fetching page ${pageNum}:`, error);
+        // Return cached data if available, otherwise empty array
         return cacheRef.current.data.get(cacheKey) || [];
       } finally {
         cacheRef.current.pendingRequests.delete(cacheKey);
@@ -1112,102 +1146,66 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
     return requestPromise;
   }, [sortConfig.key, sortConfig.direction, API_OPTIONS]);
 
-  // Market data calculation
-  const calculateMarketData = useCallback((data) => {
-    if (!data?.length) return null;
-
-    const tether = data.find(crypto =>
-      crypto.symbol?.toLowerCase() === 'usdt' || crypto.id === 'tether'
-    );
-
-    const totalMarketCap = data.reduce((sum, crypto) =>
-      sum + (crypto.market_cap || 0), 0
-    );
-
-    const total24hChange = totalMarketCap ? data.reduce((sum, crypto) => {
-      const marketCapChange = (crypto.price_change_percentage_24h || 0) * (crypto.market_cap || 0) / 100;
-      return sum + marketCapChange;
-    }, 0) / totalMarketCap * 100 : 0;
-
-    return {
-      total: {
-        marketCap: totalMarketCap,
-        change24h: total24hChange,
-        chartData30d: data[0]?.sparkline_in_7d?.price || []
-      },
-      tether: tether ? {
-        marketCap: tether.market_cap,
-        change24h: tether.price_change_percentage_24h,
-        chartData7d: tether?.sparkline_in_7d?.price || []
-      } : null
-    };
-  }, []);
-
-  // Load and update data
+  // Optimized data loading function
   const loadData = useCallback(async (force = false) => {
-    if (isLoading) return; // Prevent concurrent loads
+    if (isLoading && !force) return;
 
     setIsLoading(true);
-    setRefreshError(null);
-
+    
     try {
-      const pages = [1, 2, 3, 4, 5];
-      let allData = [];
-
       // Load first page immediately
       const firstPage = await fetchCryptoPage(1);
       if (!firstPage.length) throw new Error('No data available');
-
+      
       setCryptos(firstPage);
-      setMarketData(calculateMarketData(firstPage));
-      allData = firstPage;
-
-      // Load remaining pages with delay
-      for (let i = 1; i < pages.length; i++) {
-        if (!document.visibilityState === 'visible') break; // Stop loading if tab is hidden
-
-        try {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-          const data = await fetchCryptoPage(pages[i]);
-
-          setCryptos(prev => {
-            const existingIds = new Set(prev.map(c => c.id));
-            const newData = data.filter(c => !existingIds.has(c.id));
-            const combined = [...prev, ...newData].sort((a, b) =>
-              (b[sortConfig.key] || 0) - (a[sortConfig.key] || 0)
-            );
-            setMarketData(calculateMarketData(combined));
-            return combined;
-          });
-
-          allData = [...allData, ...data];
-        } catch (error) {
-          console.error(`Failed to load page ${pages[i]}:`, error);
-          // Continue with next page
-        }
-      }
-
-      if (allData.length > 0) {
-        const pricesMap = allData.reduce((acc, crypto) => ({
-          ...acc,
-          [crypto.id]: {
-            current_price: crypto.current_price,
-            price_change_percentage_24h: crypto.price_change_percentage_24h || 0,
-            price_change_percentage_7d: crypto.price_change_percentage_7d || 0
+      
+      // Load additional pages in background
+      const additionalPages = [2, 3, 4, 5];
+      const loadAdditionalPages = async () => {
+        for (const pageNum of additionalPages) {
+          if (document.visibilityState !== 'visible') break;
+          
+          try {
+            await new Promise(resolve => setTimeout(resolve, 1500)); // Rate limiting delay
+            const data = await fetchCryptoPage(pageNum);
+            
+            setCryptos(prev => {
+              const existingIds = new Set(prev.map(c => c.id));
+              const newData = data.filter(c => !existingIds.has(c.id));
+              return [...prev, ...newData].sort((a, b) => 
+                (b[sortConfig.key] || 0) - (a[sortConfig.key] || 0)
+              );
+            });
+          } catch (error) {
+            console.error(`Failed to load page ${pageNum}:`, error);
           }
-        }), {});
-        onPricesUpdate(pricesMap);
-      }
+        }
+      };
 
+      // Start loading additional pages
+      loadAdditionalPages();
+      
       setLastUpdate(new Date());
       setError(null);
-      setRefreshError(null);
     } catch (error) {
-      handleFetchError(error, 'manual refresh');
+      setError(error.message);
     } finally {
       setIsLoading(false);
     }
-  }, [fetchCryptoPage, calculateMarketData, handleFetchError, onPricesUpdate, sortConfig.key, isLoading]);
+  }, [fetchCryptoPage, isLoading, sortConfig.key]);
+
+  // Effect for initial load and refresh
+  useEffect(() => {
+    loadData(true);
+    
+    const intervalId = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadData();
+      }
+    }, REFRESH_INTERVAL);
+
+    return () => clearInterval(intervalId);
+  }, [loadData]);
 
   // Handlers
   const handlePageChange = useCallback((newPage) => {
@@ -1263,7 +1261,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         const bValue = b[sortConfig.key] || 0;
         return sortConfig.direction === 'desc' ? bValue - aValue : aValue - bValue;
       });
-
+  
     const start = (page - 1) * itemsPerPage;
     const end = start + itemsPerPage;
     return filtered.slice(start, end);
@@ -1277,19 +1275,25 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
       ),
       [cryptos, search]
     );
-
+  
     const totalItems = filteredCryptos.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
     const currentStartIndex = (page - 1) * itemsPerPage + 1;
     const currentEndIndex = Math.min(page * itemsPerPage, totalItems);
-
+  
+    // Update handleItemsPerPageChange to reset page to 1
+    const handleItemsPerPageChange = useCallback((newSize) => {
+      setItemsPerPage(newSize);
+      setPage(1); // Reset to first page when changing items per page
+    }, [setItemsPerPage, setPage]);
+  
     // Generate page numbers to show
     const getPageNumbers = useCallback(() => {
       const delta = 2; // Number of pages to show on each side of current page
       const range = [];
       const rangeWithDots = [];
       let l;
-
+  
       for (let i = 1; i <= totalPages; i++) {
         if (
           i === 1 ||
@@ -1299,7 +1303,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           range.push(i);
         }
       }
-
+  
       range.forEach(i => {
         if (l) {
           if (i - l === 2) {
@@ -1311,10 +1315,17 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         rangeWithDots.push(i);
         l = i;
       });
-
+  
       return rangeWithDots;
     }, [page, totalPages]);
-
+  
+    // Handle page change with validation
+    const handlePageChange = useCallback((newPage) => {
+      if (newPage >= 1 && newPage <= totalPages) {
+        setPage(newPage);
+      }
+    }, [totalPages]);
+  
     return (
       <div className="mt-4 flex flex-col sm:flex-row justify-between items-center gap-4">
         <div className="flex flex-wrap items-center gap-4">
@@ -1338,7 +1349,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
             )}
           </span>
         </div>
-
+  
         <div className="flex items-center gap-1">
           <Button
             variant="secondary"
@@ -1358,7 +1369,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           >
             <ChevronLeft size={16} />
           </Button>
-
+  
           <div className="flex items-center gap-1 mx-2">
             {getPageNumbers().map((pageNum, idx) => (
               pageNum === '...' ? (
@@ -1384,7 +1395,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
               )
             ))}
           </div>
-
+  
           <Button
             variant="secondary"
             size="sm"
@@ -1584,7 +1595,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
                         <Star size={14} className="text-gray-400" />
                       )}
                     </Button>
-                    <span className="ml-1">{(page - 1) * ITEMS_PER_PAGE + index + 1}</span>
+                    <span className="ml-1">{(page - 1) * itemsPerPage + index + 1}</span>
                   </td>
                   <td className="py-2 px-4">
                     <div className="flex items-center gap-2">
