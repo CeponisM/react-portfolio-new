@@ -1054,6 +1054,10 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   const MAX_RETRIES = 3;
   const RETRY_DELAY = 2000;
 
+  // refresh/loading
+  const [refreshStatus, setRefreshStatus] = useState('idle'); // 'idle' | 'error'
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+
   // API options memoization
   const API_OPTIONS = useMemo(() => ({
     method: 'GET',
@@ -1149,7 +1153,8 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   // Optimized data loading function
   const loadData = useCallback(async (force = false) => {
     if (isLoading && !force) return;
-
+    
+    const isRefresh = !isInitialLoad;
     setIsLoading(true);
     
     try {
@@ -1157,18 +1162,34 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
       const firstPage = await fetchCryptoPage(1);
       if (!firstPage.length) throw new Error('No data available');
       
+      // Update cryptos state
       setCryptos(firstPage);
+      setRefreshStatus('idle');
       
-      // Load additional pages in background
+      // Create price map from first page
+      const pricesMap = firstPage.reduce((acc, crypto) => ({
+        ...acc,
+        [crypto.id]: {
+          current_price: crypto.current_price,
+          price_change_percentage_24h: crypto.price_change_percentage_24h || 0,
+          price_change_percentage_7d: crypto.price_change_percentage_7d || 0
+        }
+      }), {});
+  
+      // Update parent with initial prices
+      onPricesUpdate(pricesMap);
+      
+      // Load additional pages
       const additionalPages = [2, 3, 4, 5];
       const loadAdditionalPages = async () => {
         for (const pageNum of additionalPages) {
           if (document.visibilityState !== 'visible') break;
           
           try {
-            await new Promise(resolve => setTimeout(resolve, 1500)); // Rate limiting delay
+            await new Promise(resolve => setTimeout(resolve, 1500));
             const data = await fetchCryptoPage(pageNum);
             
+            // Update cryptos state
             setCryptos(prev => {
               const existingIds = new Set(prev.map(c => c.id));
               const newData = data.filter(c => !existingIds.has(c.id));
@@ -1176,36 +1197,81 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
                 (b[sortConfig.key] || 0) - (a[sortConfig.key] || 0)
               );
             });
+  
+            // Update prices with additional page data
+            const additionalPrices = data.reduce((acc, crypto) => ({
+              ...acc,
+              [crypto.id]: {
+                current_price: crypto.current_price,
+                price_change_percentage_24h: crypto.price_change_percentage_24h || 0,
+                price_change_percentage_7d: crypto.price_change_percentage_7d || 0
+              }
+            }), {});
+            
+            // Update parent with merged prices
+            onPricesUpdate(prev => ({
+              ...prev,
+              ...additionalPrices
+            }));
           } catch (error) {
             console.error(`Failed to load page ${pageNum}:`, error);
           }
         }
       };
-
-      // Start loading additional pages
+  
       loadAdditionalPages();
-      
       setLastUpdate(new Date());
       setError(null);
+      setIsInitialLoad(false);
+      
     } catch (error) {
+      console.error('Load error:', error);
       setError(error.message);
+      setRefreshStatus('error');
+      
+      if (isInitialLoad) {
+        clearInterval(refreshTimerRef.current);
+      }
+      if (isRefresh) {
+        setIsLoading(false);
+        return;
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [fetchCryptoPage, isLoading, sortConfig.key]);
+  }, [fetchCryptoPage, sortConfig.key, isInitialLoad, onPricesUpdate]);
 
-  // Effect for initial load and refresh
+  // Modify the useEffect for initial load and refresh
   useEffect(() => {
     loadData(true);
     
-    const intervalId = setInterval(() => {
-      if (document.visibilityState === 'visible') {
+    refreshTimerRef.current = setInterval(() => {
+      if (document.visibilityState === 'visible' && !isInitialLoad) {
         loadData();
       }
     }, REFRESH_INTERVAL);
 
-    return () => clearInterval(intervalId);
-  }, [loadData]);
+    return () => clearInterval(refreshTimerRef.current);
+  }, [loadData, isInitialLoad]);
+
+  // Update the refresh button in your JSX
+  const RefreshButton = () => (
+    <Button
+      variant={refreshStatus === 'error' ? 'destructive' : 'secondary'}
+      onClick={() => loadData(true)}
+      disabled={isLoading}
+      className="whitespace-nowrap"
+    >
+      {isLoading ? (
+        <Loader2 className="w-4 h-4 animate-spin" />
+      ) : (
+        <>
+          <RefreshCcw size={16} className="mr-2" />
+          {refreshStatus === 'error' ? 'Retry' : 'Refresh'}
+        </>
+      )}
+    </Button>
+  );
 
   // Handlers
   const handlePageChange = useCallback((newPage) => {
@@ -1446,21 +1512,21 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
 
   return (
     <div className="w-full lg:w-2/3 p-4">
-      {/* Top Section with fixed height containers */}
+      {/* Top Section */}
       <TopSection
         cryptos={cryptos}
         favorites={favorites}
         onCryptoClick={scrollToCrypto}
         onRemoveFavorite={toggleFavorite}
       />
-
+  
       {/* Search and Controls */}
       <div className="mb-4 flex items-center gap-2">
         <SearchInput
           value={search}
           onChange={setSearch}
         />
-
+  
         <div className="ml-auto flex items-center gap-4">
           {lastUpdate && (
             <div className="text-sm text-right">
@@ -1474,9 +1540,9 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
               )}
             </div>
           )}
-
+  
           <Button
-            variant="secondary"
+            variant={refreshStatus === 'error' ? 'destructive' : 'secondary'}
             onClick={() => loadData(true)}
             disabled={isLoading}
             className="whitespace-nowrap"
@@ -1484,190 +1550,231 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
             {isLoading ? (
               <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
-              <RefreshCcw size={16} className="mr-2" />
+              <>
+                <RefreshCcw size={16} className="mr-2" />
+                {refreshStatus === 'error' ? 'Retry' : 'Refresh'}
+              </>
             )}
-            Refresh
           </Button>
         </div>
       </div>
-
-      {/* Crypto Table */}
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[800px]">
-          <thead>
-            <tr className="border-b">
-              <th className="py-2 px-4 text-left">#</th>
-              <th className="py-2 px-4 text-left">Coin</th>
-              <th
-                className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
-                onClick={() => handleSort('current_price')}
-              >
-                <div className="flex items-center justify-end gap-1">
-                  Price
-                  {sortConfig.key === 'current_price' && (
-                    sortConfig.direction === 'desc' ?
-                      <ChevronDown size={14} /> :
-                      <ChevronUp size={14} />
-                  )}
-                </div>
-              </th>
-              <th
-                className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
-                onClick={() => handleSort('price_change_percentage_24h')}
-              >
-                <div className="flex items-center justify-end gap-1">
-                  24h %
-                  {sortConfig.key === 'price_change_percentage_24h' && (
-                    sortConfig.direction === 'desc' ?
-                      <ChevronDown size={14} /> :
-                      <ChevronUp size={14} />
-                  )}
-                </div>
-              </th>
-              <th
-                className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
-                onClick={() => handleSort('price_change_percentage_7d')}
-              >
-                <div className="flex items-center justify-end gap-1">
-                  7d %
-                  {sortConfig.key === 'price_change_percentage_7d' && (
-                    sortConfig.direction === 'desc' ?
-                      <ChevronDown size={14} /> :
-                      <ChevronUp size={14} />
-                  )}
-                </div>
-              </th>
-              <th
-                className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
-                onClick={() => handleSort('market_cap')}
-              >
-                <div className="flex items-center justify-end gap-1">
-                  Market Cap
-                  {sortConfig.key === 'market_cap' && (
-                    sortConfig.direction === 'desc' ?
-                      <ChevronDown size={14} /> :
-                      <ChevronUp size={14} />
-                  )}
-                </div>
-              </th>
-              <th
-                className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
-                onClick={() => handleSort('total_volume')}
-              >
-                <div className="flex items-center justify-end gap-1">
-                  Volume (24h)
-                  {sortConfig.key === 'total_volume' && (
-                    sortConfig.direction === 'desc' ?
-                      <ChevronDown size={14} /> :
-                      <ChevronUp size={14} />
-                  )}
-                </div>
-              </th>
-              <th className="py-2 px-4 text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && displayedCryptos.length === 0 ? (
-              Array(itemsPerPage).fill(0).map((_, index) => (
-                <tr key={index} className="animate-pulse">
-                  <td colSpan={8} className="py-2">
-                    <div className="h-8 bg-gray-200 rounded"></div>
-                  </td>
-                </tr>
-              ))
+  
+      {/* Main Content */}
+      {isInitialLoad && isLoading ? (
+        <div className="flex flex-col items-center justify-center p-8">
+          <Loader2 className="w-8 h-8 animate-spin mb-4" />
+          <p className="text-gray-600">Loading crypto data...</p>
+        </div>
+      ) : isInitialLoad && error ? (
+        <div className="flex flex-col items-center justify-center p-8">
+          <AlertCircle className="w-8 h-8 text-red-500 mb-4" />
+          <p className="text-red-600 mb-4">Failed to load crypto data</p>
+          <Button
+            variant="destructive"
+            onClick={() => loadData(true)}
+            disabled={isLoading}
+            className="whitespace-nowrap"
+          >
+            {isLoading ? (
+              <Loader2 className="w-4 h-4 animate-spin mr-2" />
             ) : (
-              displayedCryptos.map((crypto, index) => (
-                <tr
-                  id={`crypto-row-${crypto.id}`}
-                  key={crypto.id}
-                  className="border-b hover:bg-gray-50 transition-colors"
-                >
-                  <td className="py-2 px-4 flex items-center gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => toggleFavorite(crypto.id)}
-                      className="p-1 hover:bg-gray-100"
-                    >
-                      {favorites.includes(crypto.id) ? (
-                        <Star size={14} className="fill-yellow-400 text-yellow-400" />
-                      ) : (
-                        <Star size={14} className="text-gray-400" />
-                      )}
-                    </Button>
-                    <span className="ml-1">{(page - 1) * itemsPerPage + index + 1}</span>
-                  </td>
-                  <td className="py-2 px-4">
-                    <div className="flex items-center gap-2">
-                      <img
-                        src={crypto.image}
-                        alt={crypto.name}
-                        className="w-6 h-6"
-                        onError={(e) => {
-                          e.target.onerror = null;
-                          e.target.src = '/placeholder-coin.png';
-                        }}
-                      />
-                      <div>
-                        <div className="font-medium text-sm">{crypto.name}</div>
-                        <div className="text-xs text-gray-500 uppercase">{crypto.symbol}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="py-2 px-4 text-right">
-                    ${crypto.current_price?.toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 8
-                    })}
-                  </td>
-                  <td className="py-2 px-4 text-right">
-                    <div className="flex justify-end">
-                      <PriceChange value={crypto.price_change_percentage_24h} />
-                    </div>
-                  </td>
-                  <td className="py-2 px-4 text-right">
-                    <div className="flex justify-end">
-                      <PriceChange value={Number(crypto.price_change_percentage_7d)} />
-                    </div>
-                  </td>
-                  <td className="py-2 px-4 text-right">
-                    {formatNumber(crypto.market_cap)}
-                  </td>
-                  <td className="py-2 px-4 text-right">
-                    {formatNumber(crypto.total_volume)}
-                  </td>
-                  <td className="py-2 px-4">
-                    <div className="flex items-center justify-end gap-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleAddToPortfolio(crypto)}
-                        className="p-1"
-                        title="Add to Portfolio"
-                      >
-                        <Plus size={14} />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => window.open(`https://www.tradingview.com/chart/?symbol=${crypto.symbol.toUpperCase()}USDT`, '_blank')}
-                        className="p-1"
-                        title="Open in TradingView"
-                      >
-                        <BarChart2 size={14} />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))
+              <RefreshCcw size={16} className="mr-2" />
             )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Pagination Controls */}
-      <Pagination />
-
+            Retry
+          </Button>
+        </div>
+      ) : (
+        <>
+          {/* Crypto Table */}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[800px]">
+              <thead>
+                <tr className="border-b">
+                  <th className="py-2 px-4 text-left">#</th>
+                  <th className="py-2 px-4 text-left">Coin</th>
+                  <th
+                    className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('current_price')}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      Price
+                      {sortConfig.key === 'current_price' && (
+                        sortConfig.direction === 'desc' ?
+                          <ChevronDown size={14} /> :
+                          <ChevronUp size={14} />
+                      )}
+                    </div>
+                  </th>
+                  <th
+                    className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('price_change_percentage_24h')}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      24h %
+                      {sortConfig.key === 'price_change_percentage_24h' && (
+                        sortConfig.direction === 'desc' ?
+                          <ChevronDown size={14} /> :
+                          <ChevronUp size={14} />
+                      )}
+                    </div>
+                  </th>
+                  <th
+                    className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('price_change_percentage_7d')}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      7d %
+                      {sortConfig.key === 'price_change_percentage_7d' && (
+                        sortConfig.direction === 'desc' ?
+                          <ChevronDown size={14} /> :
+                          <ChevronUp size={14} />
+                      )}
+                    </div>
+                  </th>
+                  <th
+                    className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('market_cap')}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      Market Cap
+                      {sortConfig.key === 'market_cap' && (
+                        sortConfig.direction === 'desc' ?
+                          <ChevronDown size={14} /> :
+                          <ChevronUp size={14} />
+                      )}
+                    </div>
+                  </th>
+                  <th
+                    className="py-2 px-4 text-right cursor-pointer hover:bg-gray-50"
+                    onClick={() => handleSort('total_volume')}
+                  >
+                    <div className="flex items-center justify-end gap-1">
+                      Volume (24h)
+                      {sortConfig.key === 'total_volume' && (
+                        sortConfig.direction === 'desc' ?
+                          <ChevronDown size={14} /> :
+                          <ChevronUp size={14} />
+                      )}
+                    </div>
+                  </th>
+                  <th className="py-2 px-4 text-center">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {isLoading && displayedCryptos.length === 0 ? (
+                  Array(itemsPerPage).fill(0).map((_, index) => (
+                    <tr key={index} className="animate-pulse">
+                      <td colSpan={8} className="py-2">
+                        <div className="h-8 bg-gray-200 rounded"></div>
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  displayedCryptos.map((crypto, index) => (
+                    <tr
+                      id={`crypto-row-${crypto.id}`}
+                      key={crypto.id}
+                      className="border-b hover:bg-gray-50 transition-colors"
+                    >
+                      <td className="py-2 px-4 flex items-center gap-2">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => toggleFavorite(crypto.id)}
+                          className="p-1 hover:bg-gray-100"
+                        >
+                          {favorites.includes(crypto.id) ? (
+                            <Star size={14} className="fill-yellow-400 text-yellow-400" />
+                          ) : (
+                            <Star size={14} className="text-gray-400" />
+                          )}
+                        </Button>
+                        <span className="ml-1">{(page - 1) * itemsPerPage + index + 1}</span>
+                      </td>
+                      <td className="py-2 px-4">
+                        <div className="flex items-center gap-2">
+                          <img
+                            src={crypto.image}
+                            alt={crypto.name}
+                            className="w-6 h-6"
+                            onError={(e) => {
+                              e.target.onerror = null;
+                              e.target.src = '/placeholder-coin.png';
+                            }}
+                          />
+                          <div>
+                            <div className="font-medium text-sm">{crypto.name}</div>
+                            <div className="text-xs text-gray-500 uppercase">{crypto.symbol}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2 px-4 text-right">
+                        ${crypto.current_price?.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 8
+                        })}
+                      </td>
+                      <td className="py-2 px-4 text-right">
+                        <div className="flex justify-end">
+                          <PriceChange value={crypto.price_change_percentage_24h} />
+                        </div>
+                      </td>
+                      <td className="py-2 px-4 text-right">
+                        <div className="flex justify-end">
+                          <PriceChange value={Number(crypto.price_change_percentage_7d)} />
+                        </div>
+                      </td>
+                      <td className="py-2 px-4 text-right">
+                        {formatNumber(crypto.market_cap)}
+                      </td>
+                      <td className="py-2 px-4 text-right">
+                        {formatNumber(crypto.total_volume)}
+                      </td>
+                      <td className="py-2 px-4">
+                        <div className="flex items-center justify-end gap-2">
+                          {/* Add to Portfolio Button */}
+                          <div className="relative group">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleAddToPortfolio(crypto)}
+                              className="p-1"
+                            >
+                              <Plus size={14} />
+                            </Button>
+                            <div className="absolute -bottom-8 right-0 invisible group-hover:visible bg-gray-800 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-50">
+                              Add to Portfolio
+                            </div>
+                          </div>
+                          
+                          {/* Trading View Button */}
+                          <div className="relative group">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => window.open(`https://www.tradingview.com/chart/?symbol=${crypto.symbol.toUpperCase()}USDT`, '_blank')}
+                              className="p-1"
+                            >
+                              <BarChart2 size={14} />
+                            </Button>
+                            <div className="absolute -bottom-8 right-0 invisible group-hover:visible bg-gray-800 text-white text-xs px-2 py-1 rounded whitespace-nowrap z-50">
+                              Open in TradingView
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+  
+          {/* Pagination Controls */}
+          <Pagination />
+        </>
+      )}
+  
       {/* Modals */}
       {selectedCrypto && (
         <AddToPortfolioModal
@@ -1686,44 +1793,21 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   );
 };
 
-// Helper function to generate page numbers
-const generatePageNumbers = (currentPage, totalPages) => {
-  const pages = [];
-
-  if (totalPages <= 7) {
-    return Array.from({ length: totalPages }, (_, i) => i + 1);
-  }
-
-  // Always show first page
-  pages.push(1);
-
-  if (currentPage > 3) {
-    pages.push('...');
-  }
-
-  // Show pages around current page
-  for (let i = Math.max(2, currentPage - 1); i <= Math.min(currentPage + 1, totalPages - 1); i++) {
-    pages.push(i);
-  }
-
-  if (currentPage < totalPages - 2) {
-    pages.push('...');
-  }
-
-  // Always show last page
-  pages.push(totalPages);
-
-  return pages;
+const formatNumber = (num, decimals = 2) => {
+  if (num === null || num === undefined) return '0';
+  return num.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
 };
 
 const Portfolio = ({ holdings, onRemoveHolding, onUpdateHolding, currentPrices }) => {
   const [selectedAsset, setSelectedAsset] = useState(null);
+  const [sortConfig, setSortConfig] = useState({ key: 'value', direction: 'desc' });
 
   const handleDeletePurchase = (purchaseId) => {
     onRemoveHolding(purchaseId);
   };
-
-  const [sortConfig, setSortConfig] = useState({ key: 'value', direction: 'desc' });
 
   // Group holdings by cryptoId and calculate statistics
   const portfolioData = useMemo(() => {
@@ -1740,6 +1824,7 @@ const Portfolio = ({ holdings, onRemoveHolding, onUpdateHolding, currentPrices }
           averagePrice: 0,
           currentPrice: currentPrices[holding.cryptoId]?.current_price || holding.price,
           priceChange24h: currentPrices[holding.cryptoId]?.price_change_percentage_24h || 0,
+          price_change_percentage_7d: currentPrices[holding.cryptoId]?.price_change_percentage_7d || 0,
         };
       }
       acc[holding.cryptoId].purchases.push(holding);
@@ -1760,6 +1845,49 @@ const Portfolio = ({ holdings, onRemoveHolding, onUpdateHolding, currentPrices }
     return Object.values(groupedHoldings);
   }, [holdings, currentPrices]);
 
+  // Enhanced portfolio statistics calculation
+  const portfolioStats = useMemo(() => {
+    return portfolioData.reduce((stats, asset) => {
+      // Calculate 24h change
+      const prev24hValue = asset.totalAmount * (asset.currentPrice / (1 + asset.priceChange24h / 100));
+      const change24h = asset.currentValue - prev24hValue;
+
+      // Find best and worst performers
+      if (!stats.bestPerformer || asset.pnlPercentage > stats.bestPerformer.pnlPercentage) {
+        stats.bestPerformer = {
+          name: asset.name,
+          symbol: asset.symbol,
+          image: asset.image,
+          pnlPercentage: asset.pnlPercentage
+        };
+      }
+      if (!stats.worstPerformer || asset.pnlPercentage < stats.worstPerformer.pnlPercentage) {
+        stats.worstPerformer = {
+          name: asset.name,
+          symbol: asset.symbol,
+          image: asset.image,
+          pnlPercentage: asset.pnlPercentage
+        };
+      }
+
+      return {
+        totalValue: stats.totalValue + asset.currentValue,
+        totalCost: stats.totalCost + asset.totalValue,
+        totalPnl: stats.totalPnl + asset.pnl,
+        change24h: stats.change24h + change24h,
+        bestPerformer: stats.bestPerformer,
+        worstPerformer: stats.worstPerformer
+      };
+    }, { 
+      totalValue: 0, 
+      totalCost: 0, 
+      totalPnl: 0, 
+      change24h: 0,
+      bestPerformer: null,
+      worstPerformer: null
+    });
+  }, [portfolioData]);
+
   // Sort portfolio assets
   const sortedAssets = useMemo(() => {
     return [...portfolioData].sort((a, b) => {
@@ -1769,137 +1897,183 @@ const Portfolio = ({ holdings, onRemoveHolding, onUpdateHolding, currentPrices }
     });
   }, [portfolioData, sortConfig]);
 
-  // Calculate total portfolio statistics
-  const portfolioStats = useMemo(() => {
-    return portfolioData.reduce((stats, asset) => ({
-      totalValue: stats.totalValue + asset.currentValue,
-      totalCost: stats.totalCost + asset.totalValue,
-      totalPnl: stats.totalPnl + asset.pnl,
-    }), { totalValue: 0, totalCost: 0, totalPnl: 0 });
-  }, [portfolioData]);
-
-  const handleSort = (key) => {
-    setSortConfig(prev => ({
-      key,
-      direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc'
-    }));
-  };
-
   return (
-    <div className="w-full lg:w-1/3 flex flex-col h-screen">
-      <div className="flex-1 overflow-y-auto">
-        <div className="p-4 border-b bg-white sticky top-0 z-10">
-          <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-            <TrendingUp size={24} />
-            Portfolio
-          </h2>
-
-          <div className="grid grid-cols-2 gap-4">
-            <Card className="p-4">
-              <h3 className="text-sm text-gray-500">Total Value</h3>
-              <p className="text-xl font-bold">${portfolioStats.totalValue.toFixed(2)}</p>
-              <div className={`text-sm ${portfolioStats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                {portfolioStats.totalPnl >= 0 ? '+' : ''}${portfolioStats.totalPnl.toFixed(2)}
-                ({((portfolioStats.totalPnl / portfolioStats.totalCost) * 100).toFixed(2)}%)
+    <div className="w-full lg:w-1/3 flex flex-col min-h-full border-r">
+      <div className="flex flex-col flex-1">
+        {/* Header Section */}
+        <div className="bg-white border-b top-0 z-10">
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <TrendingUp size={24} />
+                Portfolio
+              </h2>
+              <div className="text-sm text-gray-500">
+                {portfolioData.length} Assets
               </div>
-            </Card>
-            <Card className="p-4">
-              <h3 className="text-sm text-gray-500">Assets</h3>
-              <p className="text-xl font-bold">{portfolioData.length}</p>
-              <p className="text-sm text-gray-500">Active Positions</p>
-            </Card>
-          </div>
-        </div>
+            </div>
 
-        <div className="p-4 space-y-4">
-          {sortedAssets.map(asset => (
-            <Card
-              key={asset.id}
-              className="p-4 hover:shadow-lg transition-shadow"
-            >
-              <div className="flex justify-between items-start">
-                <div className="flex items-center gap-3">
-                  <img
-                    src={asset.image}
-                    alt={asset.name}
-                    className="w-10 h-10 rounded-full"
-                  />
-                  <div>
-                    <h4 className="font-bold flex items-center gap-2">
-                      {asset.name}
-                      <span className="text-sm font-normal text-gray-500">
-                        {asset.symbol.toUpperCase()}
-                      </span>
-                    </h4>
-                    <div className="text-sm text-gray-500">
-                      {asset.totalAmount.toLocaleString(undefined, {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 8
-                      })} tokens
+            <div className="space-y-2">
+              {/* Total Value and 24h Change */}
+              <div className="flex justify-between items-center">
+                <div>
+                  <span className="text-sm text-gray-500">Total Value</span>
+                  <div className="font-bold text-lg">
+                    ${formatNumber(portfolioStats.totalValue)}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-sm text-gray-500">24h Change</span>
+                  <div className={`font-bold ${portfolioStats.change24h >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    {portfolioStats.change24h >= 0 ? '+' : ''}{formatNumber(portfolioStats.change24h)}
+                    <span className="text-sm ml-1">
+                      ({formatNumber((portfolioStats.change24h / (portfolioStats.totalValue - portfolioStats.change24h)) * 100, 2)}%)
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* PNL and Best Performer */}
+              <div className="flex justify-between items-center">
+                <div>
+                  <span className="text-sm text-gray-500">Total PNL</span>
+                  <div className={`font-bold ${portfolioStats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    {portfolioStats.totalPnl >= 0 ? '+' : ''}{formatNumber(portfolioStats.totalPnl)}
+                    <span className="text-sm ml-1">
+                      ({formatNumber((portfolioStats.totalPnl / portfolioStats.totalCost) * 100, 2)}%)
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="text-right">
+                    <span className="text-sm text-gray-500">Best Performer</span>
+                    <div className="flex items-center gap-2">
+                      {portfolioStats.bestPerformer && (
+                        <>
+                          <img
+                            src={portfolioStats.bestPerformer.image}
+                            alt={portfolioStats.bestPerformer.symbol}
+                            className="w-5 h-5"
+                            onError={(e) => {
+                              e.target.onerror = null;
+                              e.target.src = '/placeholder-coin.png';
+                            }}
+                          />
+                          <div>
+                            <span className="font-bold">{portfolioStats.bestPerformer.symbol.toUpperCase()}</span>
+                            <span className="text-green-500 text-sm ml-1">
+                              (+{formatNumber(portfolioStats.bestPerformer.pnlPercentage, 2)}%)
+                            </span>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
-                <Button
-                  variant="secondary"
-                  onClick={() => setSelectedAsset(asset)}
-                  className="text-sm"
-                >
-                  View History
-                </Button>
               </div>
-
-              <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <span className="text-gray-500">Current Value:</span>
-                  <span className="ml-2 font-medium">
-                    ${asset.currentValue.toFixed(2)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-gray-500">Avg. Price:</span>
-                  <span className="ml-2 font-medium">
-                    ${asset.averagePrice.toFixed(2)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-gray-500">Current Price:</span>
-                  <span className="ml-2 font-medium">
-                    ${asset.currentPrice.toFixed(2)}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-gray-500">24h Change:</span>
-                  <span className={`ml-2 font-medium ${asset.priceChange24h >= 0 ? 'text-green-500' : 'text-red-500'
-                    }`}>
-                    {asset.priceChange24h >= 0 ? '+' : ''}
-                    {asset.priceChange24h.toFixed(2)}%
-                  </span>
-                </div>
-                <div className="col-span-2">
-                  <span className="text-gray-500">Profit/Loss:</span>
-                  <span className={`ml-2 font-medium ${asset.pnl >= 0 ? 'text-green-500' : 'text-red-500'
-                    }`}>
-                    {asset.pnl >= 0 ? '+' : ''}${asset.pnl.toFixed(2)}
-                    ({asset.pnl >= 0 ? '+' : ''}{asset.pnlPercentage.toFixed(2)}%)
-                  </span>
-                </div>
-              </div>
-            </Card>
-          ))}
-        </div>
-        <div className="p-4 border-t bg-white mt-4">
-          <PortfolioFooter holdings={holdings} currentPrices={currentPrices} />
+            </div>
+          </div>
         </div>
 
-        {selectedAsset && (
-          <PurchaseHistoryModal
-            asset={selectedAsset}
-            onClose={() => setSelectedAsset(null)}
-            onEditPurchase={onUpdateHolding}
-            onDeletePurchase={handleDeletePurchase}
-          />
-        )}
+        {/* Main Content - Asset List */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="p-4 space-y-4">
+            {sortedAssets.map(asset => (
+              <Card
+                key={asset.id}
+                className="p-4 hover:shadow-lg transition-shadow"
+              >
+                <div className="flex justify-between items-start">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={asset.image}
+                      alt={asset.name}
+                      className="w-10 h-10 rounded-full"
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.src = '/placeholder-coin.png';
+                      }}
+                    />
+                    <div>
+                      <h4 className="font-bold flex items-center gap-2">
+                        {asset.name}
+                        <span className="text-sm font-normal text-gray-500">
+                          {asset.symbol.toUpperCase()}
+                        </span>
+                      </h4>
+                      <div className="text-sm text-gray-500">
+                        {formatNumber(asset.totalAmount, 8)}
+                      </div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setSelectedAsset(asset)}
+                    className="text-sm"
+                  >
+                    View History
+                  </Button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <span className="text-gray-500">Current Value:</span>
+                    <span className="ml-2 font-medium">
+                      ${formatNumber(asset.currentValue)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Avg. Price:</span>
+                    <span className="ml-2 font-medium">
+                      ${formatNumber(asset.averagePrice)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Current Price:</span>
+                    <span className="ml-2 font-medium">
+                      ${formatNumber(asset.currentPrice)}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">24h Change:</span>
+                    <span className={`ml-2 font-medium ${asset.priceChange24h >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {asset.priceChange24h >= 0 ? '+' : ''}
+                      {formatNumber(asset.priceChange24h, 2)}%
+                    </span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-gray-500">Profit/Loss:</span>
+                    <span className={`ml-2 font-medium ${asset.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {asset.pnl >= 0 ? '+' : ''}{formatNumber(asset.pnl)}
+                      ({asset.pnl >= 0 ? '+' : ''}{formatNumber(asset.pnlPercentage, 2)}%)
+                    </span>
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="mt-auto bg-white border-t">
+          <div className="p-4">
+            <PortfolioFooter 
+              holdings={holdings} 
+              currentPrices={currentPrices} 
+            />
+          </div>
+        </div>
       </div>
+
+      {/* Modal */}
+      {selectedAsset && (
+        <PurchaseHistoryModal
+          asset={selectedAsset}
+          onClose={() => setSelectedAsset(null)}
+          onEditPurchase={onUpdateHolding}
+          onDeletePurchase={handleDeletePurchase}
+        />
+      )}
     </div>
   );
 };
