@@ -725,20 +725,20 @@ const TopSection = memo(({ cryptos, favorites, onCryptoClick, onRemoveFavorite, 
 
     const prevMarketCapExBtc = dataRef.current?.marketCapExBtc;
     const prevBtcDominance = dataRef.current?.btcDominance;
-    
-    const marketCapExBtcChange = prevMarketCapExBtc 
-      ? ((marketCapExBtc - prevMarketCapExBtc) / prevMarketCapExBtc) * 100 
+
+    const marketCapExBtcChange = prevMarketCapExBtc
+      ? ((marketCapExBtc - prevMarketCapExBtc) / prevMarketCapExBtc) * 100
       : null;
-      
-    const btcDominanceChange = prevBtcDominance 
+
+    const btcDominanceChange = prevBtcDominance
       ? btcDominance - prevBtcDominance
       : null;
-  
+
     const tether = cryptos.find(c => c?.symbol?.toLowerCase() === 'usdt');
     const topGainers = [...cryptos]
       .sort((a, b) => (b.price_change_percentage_24h || 0) - (a.price_change_percentage_24h || 0))
       .slice(0, 8);
-  
+
     const newData = {
       marketCap: marketCap || null,
       marketCapExBtc: marketCapExBtc || null,
@@ -1059,13 +1059,19 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   // API options memoization
-  const API_OPTIONS = useMemo(() => ({
-    method: 'GET',
-    headers: {
-      'X-RapidAPI-Key': '0026bcf8a1mshb924ad6fbaa031fp15ce2cjsn87ce6d3e6066',
-      'X-RapidAPI-Host': 'coingecko.p.rapidapi.com'
+  const API_OPTIONS = useMemo(() => {
+    if (!process.env.REACT_APP_COINGECKO_API_KEY) {
+      console.error('CoinGecko API key is missing. Please set REACT_APP_COINGECKO_API_KEY in the .env file.');
+      return {};
     }
-  }), []);
+    return {
+      method: 'GET',
+      headers: {
+        'X-RapidAPI-Key': process.env.REACT_APP_COINGECKO_API_KEY,
+        'X-RapidAPI-Host': 'coingecko.p.rapidapi.com'
+      }
+    };
+  }, []);
 
   // UI state
   const [search, setSearch] = useState('');
@@ -1105,8 +1111,8 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
     }
 
     // Check cache validity
-    if (cacheRef.current.data.has(cacheKey) && 
-        now - cacheRef.current.lastUpdate < CACHE_DURATION) {
+    if (cacheRef.current.data.has(cacheKey) &&
+      now - cacheRef.current.lastUpdate < CACHE_DURATION) {
       return cacheRef.current.data.get(cacheKey);
     }
 
@@ -1120,7 +1126,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         // Handle rate limiting
         if (response.status === 429) {
           if (retries < MAX_RETRIES) {
-            await new Promise(resolve => 
+            await new Promise(resolve =>
               setTimeout(resolve, RETRY_DELAY * Math.pow(2, retries))
             );
             return fetchCryptoPage(pageNum, retries + 1);
@@ -1129,13 +1135,13 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         }
 
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        
+
         const data = await response.json();
-        
+
         // Update cache
         cacheRef.current.data.set(cacheKey, data);
         cacheRef.current.lastUpdate = now;
-        
+
         return data;
       } catch (error) {
         console.error(`Error fetching page ${pageNum}:`, error);
@@ -1153,19 +1159,19 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   // Optimized data loading function
   const loadData = useCallback(async (force = false) => {
     if (isLoading && !force) return;
-    
+
     const isRefresh = !isInitialLoad;
     setIsLoading(true);
-    
+
     try {
       // Load first page immediately
       const firstPage = await fetchCryptoPage(1);
       if (!firstPage.length) throw new Error('No data available');
-      
+
       // Update cryptos state
       setCryptos(firstPage);
       setRefreshStatus('idle');
-      
+
       // Create price map from first page
       const pricesMap = firstPage.reduce((acc, crypto) => ({
         ...acc,
@@ -1175,29 +1181,29 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           price_change_percentage_7d: crypto.price_change_percentage_7d || 0
         }
       }), {});
-  
+
       // Update parent with initial prices
       onPricesUpdate(pricesMap);
-      
+
       // Load additional pages
       const additionalPages = [2, 3, 4, 5];
       const loadAdditionalPages = async () => {
         for (const pageNum of additionalPages) {
           if (document.visibilityState !== 'visible') break;
-          
+
           try {
             await new Promise(resolve => setTimeout(resolve, 1500));
             const data = await fetchCryptoPage(pageNum);
-            
+
             // Update cryptos state
             setCryptos(prev => {
               const existingIds = new Set(prev.map(c => c.id));
               const newData = data.filter(c => !existingIds.has(c.id));
-              return [...prev, ...newData].sort((a, b) => 
+              return [...prev, ...newData].sort((a, b) =>
                 (b[sortConfig.key] || 0) - (a[sortConfig.key] || 0)
               );
             });
-  
+
             // Update prices with additional page data
             const additionalPrices = data.reduce((acc, crypto) => ({
               ...acc,
@@ -1207,7 +1213,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
                 price_change_percentage_7d: crypto.price_change_percentage_7d || 0
               }
             }), {});
-            
+
             // Update parent with merged prices
             onPricesUpdate(prev => ({
               ...prev,
@@ -1218,17 +1224,17 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           }
         }
       };
-  
+
       loadAdditionalPages();
       setLastUpdate(new Date());
       setError(null);
       setIsInitialLoad(false);
-      
+
     } catch (error) {
       console.error('Load error:', error);
       setError(error.message);
       setRefreshStatus('error');
-      
+
       if (isInitialLoad) {
         clearInterval(refreshTimerRef.current);
       }
@@ -1244,7 +1250,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
   // Modify the useEffect for initial load and refresh
   useEffect(() => {
     loadData(true);
-    
+
     refreshTimerRef.current = setInterval(() => {
       if (document.visibilityState === 'visible' && !isInitialLoad) {
         loadData();
@@ -1327,7 +1333,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         const bValue = b[sortConfig.key] || 0;
         return sortConfig.direction === 'desc' ? bValue - aValue : aValue - bValue;
       });
-  
+
     const start = (page - 1) * itemsPerPage;
     const end = start + itemsPerPage;
     return filtered.slice(start, end);
@@ -1341,25 +1347,25 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
       ),
       [cryptos, search]
     );
-  
+
     const totalItems = filteredCryptos.length;
     const totalPages = Math.max(1, Math.ceil(totalItems / itemsPerPage));
     const currentStartIndex = (page - 1) * itemsPerPage + 1;
     const currentEndIndex = Math.min(page * itemsPerPage, totalItems);
-  
+
     // Update handleItemsPerPageChange to reset page to 1
     const handleItemsPerPageChange = useCallback((newSize) => {
       setItemsPerPage(newSize);
       setPage(1); // Reset to first page when changing items per page
     }, [setItemsPerPage, setPage]);
-  
+
     // Generate page numbers to show
     const getPageNumbers = useCallback(() => {
       const delta = 2; // Number of pages to show on each side of current page
       const range = [];
       const rangeWithDots = [];
       let l;
-  
+
       for (let i = 1; i <= totalPages; i++) {
         if (
           i === 1 ||
@@ -1369,7 +1375,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           range.push(i);
         }
       }
-  
+
       range.forEach(i => {
         if (l) {
           if (i - l === 2) {
@@ -1381,17 +1387,17 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         rangeWithDots.push(i);
         l = i;
       });
-  
+
       return rangeWithDots;
     }, [page, totalPages]);
-  
+
     // Handle page change with validation
     const handlePageChange = useCallback((newPage) => {
       if (newPage >= 1 && newPage <= totalPages) {
         setPage(newPage);
       }
     }, [totalPages]);
-  
+
     return (
       <div className="mt-4 flex flex-col sm:flex-row justify-between items-center gap-4">
         <div className="flex flex-wrap items-center gap-4">
@@ -1415,7 +1421,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
             )}
           </span>
         </div>
-  
+
         <div className="flex items-center gap-1">
           <Button
             variant="secondary"
@@ -1435,7 +1441,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           >
             <ChevronLeft size={16} />
           </Button>
-  
+
           <div className="flex items-center gap-1 mx-2">
             {getPageNumbers().map((pageNum, idx) => (
               pageNum === '...' ? (
@@ -1461,7 +1467,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
               )
             ))}
           </div>
-  
+
           <Button
             variant="secondary"
             size="sm"
@@ -1519,14 +1525,14 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
         onCryptoClick={scrollToCrypto}
         onRemoveFavorite={toggleFavorite}
       />
-  
+
       {/* Search and Controls */}
       <div className="mb-4 flex items-center gap-2">
         <SearchInput
           value={search}
           onChange={setSearch}
         />
-  
+
         <div className="ml-auto flex items-center gap-4">
           {lastUpdate && (
             <div className="text-sm text-right">
@@ -1540,7 +1546,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
               )}
             </div>
           )}
-  
+
           <Button
             variant={refreshStatus === 'error' ? 'destructive' : 'secondary'}
             onClick={() => loadData(true)}
@@ -1558,7 +1564,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
           </Button>
         </div>
       </div>
-  
+
       {/* Main Content */}
       {isInitialLoad && isLoading ? (
         <div className="flex flex-col items-center justify-center p-8">
@@ -1746,7 +1752,7 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
                               Add to Portfolio
                             </div>
                           </div>
-                          
+
                           {/* Trading View Button */}
                           <div className="relative group">
                             <Button
@@ -1769,12 +1775,12 @@ const CryptoList = ({ onAddToPortfolio, onPricesUpdate }) => {
               </tbody>
             </table>
           </div>
-  
+
           {/* Pagination Controls */}
           <Pagination />
         </>
       )}
-  
+
       {/* Modals */}
       {selectedCrypto && (
         <AddToPortfolioModal
@@ -1878,10 +1884,10 @@ const Portfolio = ({ holdings, onRemoveHolding, onUpdateHolding, currentPrices }
         bestPerformer: stats.bestPerformer,
         worstPerformer: stats.worstPerformer
       };
-    }, { 
-      totalValue: 0, 
-      totalCost: 0, 
-      totalPnl: 0, 
+    }, {
+      totalValue: 0,
+      totalCost: 0,
+      totalPnl: 0,
       change24h: 0,
       bestPerformer: null,
       worstPerformer: null
@@ -2057,9 +2063,9 @@ const Portfolio = ({ holdings, onRemoveHolding, onUpdateHolding, currentPrices }
         {/* Footer */}
         <div className="mt-auto bg-white border-t">
           <div className="p-4">
-            <PortfolioFooter 
-              holdings={holdings} 
-              currentPrices={currentPrices} 
+            <PortfolioFooter
+              holdings={holdings}
+              currentPrices={currentPrices}
             />
           </div>
         </div>
