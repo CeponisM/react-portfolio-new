@@ -55,7 +55,7 @@ A modern, responsive cryptocurrency portfolio tracker built with React. This app
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/your-username/crypto-portfolio-tracker.git
+   git clone https://github.com/CeponisM/react-portfolio-new.git
    cd crypto-portfolio-tracker
    ```
 
